@@ -1,6 +1,6 @@
 [project]
 name = "voice-enhance"
-version = "0.6.0"
+version = "0.7.0"
 description = "Local, Adobe-Podcast-style speech enhancement: AI denoise + broadcast polish + loudness normalisation."
 readme = "README.md"
 requires-python = ">=3.10,<3.12"  # DeepFilterLib has no 3.12 wheels

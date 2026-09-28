@@ -162,8 +162,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("inputs", nargs="*", help="audio/video files or folders")
     ap.add_argument("-o", "--output", help="output file (single input) or folder")
-    ap.add_argument("-b", "--backend", default="resemble", choices=list(BACKENDS),
-                    help="engine: resemble (default, generative AI rebuild like Adobe), resemble-denoise, deepfilter, clearvoice, apple, none")
+    ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
+                    help="engine: deepfilter (default: natural-sounding AI noise removal), resemble (generative re-synthesis; removes more reverb but can sound robotic, and is slow), resemble-denoise, clearvoice, apple, none")
     ap.add_argument("--no-rebuild", dest="rebuild", action="store_false",
                     help="skip the rebuild step (regenerating missing high frequencies)")
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
@@ -272,14 +272,11 @@ def main(argv: list[str] | None = None) -> None:
                 else:
                     level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
             avail = available_backends()
-            variants = []  # (label, backend, guard, tone)
+            variants = [("deepfilter_warm", "deepfilter", guard, "warm"),        # the default
+                        ("deepfilter_neutral", "deepfilter", guard, "neutral"),
+                        ("deepfilter_no-guard", "deepfilter", None, "warm")]
             if "resemble" in avail:
-                variants += [("resemble_warm", "resemble", guard, "warm"),
-                             ("resemble_neutral", "resemble", guard, "neutral"),
-                             ("resemble_no-guard", "resemble", None, "warm")]
-            if "clearvoice" in avail:
-                pass  # measured: no better than deepfilter on reverb; left out to keep --compare quick
-            variants.append(("deepfilter_warm", "deepfilter", guard, "warm"))
+                variants.append(("resemble_warm", "resemble", guard, "warm"))
             for n, (label, b, g, tone) in enumerate(variants, start=1):
                 with prog.progress(short(f"{n}_{label}", 30),
                                    stages_for(args, b, g, args.rebuild, decode=False, tone=tone), backend=b):
