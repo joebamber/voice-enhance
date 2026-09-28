@@ -69,9 +69,9 @@ def polish_filters(toned: bool) -> list[str]:
     return [
         # sub-rumble only when the tone curve is shaping the low end, otherwise a normal voice high-pass
         "highpass=f=50:poles=2" if toned else "highpass=f=70:poles=2",
-        "deesser=i=0.3:m=0.5:f=0.5",
-        # gentle 2:1 levelling, slow enough to keep the voice's natural movement
-        "acompressor=threshold=-19dB:ratio=2:attack=20:release=250:knee=6:detection=rms",
+        # No de-esser: it took ~9 dB off every "s" and made speakers sound lispy.
+        # No compression: dynamics are left to the editor, and compressing
+        # lifts the room tails between words (measured: ~3.5 dB more reverb).
     ]
 
 

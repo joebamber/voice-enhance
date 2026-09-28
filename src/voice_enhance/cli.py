@@ -15,6 +15,8 @@ from . import __version__
 from . import progress as prog
 from .audio import SR, level_stage, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
 from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
+from .declip import declip
+from .dereverb import dereverb
 from .guard import GuardSettings, apply_guard
 from .tone import PROFILES, apply_eq, correction, target_from, with_presence
 
@@ -49,11 +51,20 @@ def ts(sec: float) -> str:
 
 
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
-            gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False) -> tuple[np.ndarray, str]:
+            gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False,
+            dry: float = 1.0, rebuild_above: float | None = None,
+            repair_clipping: bool = True) -> tuple[np.ndarray, str]:
+    notes = []
+    if repair_clipping:
+        prog.stage("declip")
+        audio, n_fixed = declip(audio)
+        if n_fixed:
+            notes.append(f"repaired {n_fixed} clipped peaks")
     t = time.time()
     prog.stage("cleanup")
     cleaned = BACKENDS[backend](audio)
-    note = f"{backend} {time.time() - t:.1f}s"
+    notes.append(f"{backend} {time.time() - t:.1f}s")
+    note = ", ".join(notes)
     if backend != "none" and guard and guard.strength > 0:
         prog.stage("guard")
         if "g" not in gentle_cache:
@@ -65,13 +76,16 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
             note += "\n    at " + ", ".join(f"{ts(a)} ({b - a:.1f}s)" for a, b in regions)
     if mix < 1.0:
         cleaned = mix * cleaned + (1 - mix) * audio
+    if backend != "none" and dry > 0:
+        prog.stage("dereverb")
+        cleaned = dereverb(cleaned, dry)
     if rebuild_hf:
         # after the guard, so laughs get rebuilt too instead of flipping between
         # a rebuilt and an un-rebuilt version
         t = time.time()
         prog.stage("rebuild")
-        cleaned = rebuild(cleaned)
-        note += f", rebuild {time.time() - t:.1f}s"
+        cleaned, what = rebuild(cleaned, rebuild_above)
+        note += f", {what} ({time.time() - t:.1f}s)"
     return cleaned, note
 
 
@@ -81,9 +95,13 @@ def is_toned(args) -> bool:
 
 def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool) -> list[str]:
     st = ["decode"] if decode else []
+    if args.declip:
+        st.append("declip")
     st.append("cleanup")
     if backend != "none" and guard and guard.strength > 0:
         st.append("guard")
+    if backend != "none" and args.dereverb > 0:
+        st.append("dereverb")
     if rebuild_hf:
         st.append("rebuild")
     if is_toned(args):
@@ -144,7 +162,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
                     help="cleanup engine (default: deepfilter)")
     ap.add_argument("--no-rebuild", dest="rebuild", action="store_false",
-                    help="skip the rebuild step (regenerating missing high frequencies); cleanup only, much faster")
+                    help="skip the rebuild step (regenerating missing high frequencies)")
+    ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
+                    help="force the rebuild to regenerate everything above this frequency (default: detect where "
+                         "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
+    ap.add_argument("--no-declip", dest="declip", action="store_false",
+                    help="don't repair clipped (flat-topped) peaks before cleanup")
+    ap.add_argument("--dereverb", type=float, default=1.0, metavar="0-1",
+                    help="how hard to suppress room reverb tails after words (default 1.0, 0 = off)")
     ap.add_argument("--compare", action="store_true",
                     help="render every backend with and without the laughter guard and the rebuild "
                          "into <name>_compare/ for A/B listening")
@@ -243,7 +268,8 @@ def main(argv: list[str] | None = None) -> None:
                 for label, g, rb in variants:
                     with prog.progress(short(f"{n}_{label}", 30), stages_for(args, b, g, rb, decode=False)):
                         y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
-                                          verbose=args.verbose, rebuild_hf=rb)
+                                          verbose=args.verbose, rebuild_hf=rb, dry=args.dereverb, repair_clipping=args.declip,
+                                          rebuild_above=args.rebuild_above)
                         result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
                     log(f"  -> {result}")
                     if args.verbose:
@@ -263,12 +289,12 @@ def main(argv: list[str] | None = None) -> None:
             prog.stage("decode")
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
-                              rebuild_hf=args.rebuild, verbose=args.verbose)
+                              rebuild_hf=args.rebuild, verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip,
+                              rebuild_above=args.rebuild_above)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)
         log(f"  -> {result}  [{audio.size / SR / 60:.1f} min audio in {int(mins)}m{int(secs):02d}s]")
-        if args.verbose:
-            log(f"  {note}")
+        log(f"     {note}")
 
 
 if __name__ == "__main__":

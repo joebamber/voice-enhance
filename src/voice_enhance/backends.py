@@ -144,9 +144,16 @@ class _OutputToCPU:
 
     def __init__(self, module):
         self._m = module
+        self.expected = 0  # windows expected for the current file (for the progress bar)
+        self.count = 0
 
     def __call__(self, *a, **k):
-        return self._m(*a, **k).float().cpu()
+        out = self._m(*a, **k).float().cpu()
+        self.count += 1
+        if self.expected:
+            from . import progress
+            progress.fraction(self.count / self.expected)
+        return out
 
     def __getattr__(self, name):
         return getattr(self._m, name)
@@ -187,7 +194,7 @@ def _cv(task: str, model: str):
     return cv
 
 
-def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
+def _cv_run(task: str, model: str, audio: np.ndarray, whole: bool = False) -> np.ndarray:
     cv = _cv(task, model)
 
     def run(seg: np.ndarray) -> np.ndarray:
@@ -201,9 +208,12 @@ def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
             y = next(iter(y.values()))
         return np.asarray(y, dtype=np.float32).reshape(-1)
 
-    # 10 s pieces keep memory modest and let the progress bar move every few
-    # seconds; ClearVoice windows internally anyway, and pieces are crossfaded.
-    return chunked(run, audio, chunk_s=10.0, overlap_s=0.5)
+    if whole:
+        # One pass: ClearVoice's own 4 s sliding window keeps memory flat and
+        # avoids the audible joins that crossfading separately generated pieces
+        # produced (generated high band doesn't line up between pieces).
+        return _fit(run(audio), audio.size)
+    return chunked(run, audio, chunk_s=30.0, overlap_s=1.0)
 
 
 def _need_clearvoice() -> None:
@@ -222,21 +232,38 @@ def clearvoice(audio: np.ndarray) -> np.ndarray:
 _BAND_EDGE: dict = {}
 
 
-def _detect_edge(audio: np.ndarray) -> float:
-    """Where the recording's real bandwidth ends (Hz): ClearVoice's own rule
-    (99% of energy below it), measured once over the whole file and clamped."""
-    from clearvoice.utils import bandwidth_sub as bs
-    x = audio[np.isfinite(audio)]
-    if x.size == 0 or float(np.sum(x.astype(np.float64) ** 2)) < 1e-9:
-        return 0.95 * SR / 2
-    _, f_high = bs.detect_bandwidth(x, SR)
-    return float(np.clip(f_high, 1000.0, 0.95 * SR / 2))
+def bandwidth_edge(audio: np.ndarray, drop_db: float = 20.0) -> float | None:
+    """Where the recording's spectrum falls off a cliff (Hz), or None if it's full-band.
+
+    A phone call stops dead around 3.4-4 kHz, Zoom/laptop audio around 7-8 kHz,
+    a 22 kHz recording at 11 kHz. A good microphone just tapers off, with no
+    cliff, so there's nothing to rebuild. (ClearVoice's own rule, "99% of the
+    energy", puts the edge at ~8 kHz even on full-band speech and then replaces
+    real sibilance with generated hiss.)
+    """
+    from scipy.signal import welch
+    f0 = SR // 10
+    n = audio.size // f0
+    if n < 5:
+        return None
+    frames = audio[: n * f0].reshape(n, f0)
+    lv = 10 * np.log10((frames ** 2).mean(1) + 1e-12)
+    speech = frames[lv > np.percentile(lv, 50)].ravel()
+    f, p = welch(speech, SR, nperseg=4096)
+    level = 10 * np.log10(p + 1e-20)
+    best = None
+    for fc in f[(f >= 2500) & (f <= 0.93 * SR / 2)]:
+        below = level[(f >= fc / 1.19) & (f < fc)].mean()
+        above = level[(f > fc * 1.03) & (f <= fc * 1.25)].mean()
+        drop = below - above
+        if drop > drop_db and (best is None or drop > best[1]):
+            best = (float(fc), float(drop))
+    return best[0] if best else None
 
 
 def _install_band_fix() -> None:
-    """ClearVoice re-detects the bandwidth for every piece it processes. On a
-    silent piece that gives 0 Hz and scipy raises; it also lets the cutoff
-    jump around from piece to piece. Use one cutoff for the whole file."""
+    """Make ClearVoice use our cutoff instead of re-detecting it per window
+    (its per-window detection crashes on silence and wanders between windows)."""
     import clearvoice.utils.decode as dec
     from clearvoice.utils import bandwidth_sub as bs
     if getattr(dec.bandwidth_sub, "_voice_enhance", False):
@@ -245,7 +272,7 @@ def _install_band_fix() -> None:
     def fixed_bandwidth_sub(low, high, fs=48000):
         low = np.asarray(low, dtype=np.float64)
         high = np.asarray(high, dtype=np.float64)
-        f_high = _BAND_EDGE.get("hz") or _detect_edge(low.astype(np.float32))
+        f_high = float(np.clip(_BAND_EDGE.get("hz", 0.95 * fs / 2), 1000.0, 0.95 * fs / 2))
         replaced = bs.replace_bandwidth(low, high, fs, 0.0, f_high)
         return bs.smooth_transition(replaced, low, fs)
 
@@ -253,20 +280,36 @@ def _install_band_fix() -> None:
     dec.bandwidth_sub = fixed_bandwidth_sub
 
 
-def rebuild(audio: np.ndarray) -> np.ndarray:
-    """MossFormer2 48 kHz speech super-resolution.
+def rebuild(audio: np.ndarray, above_hz: float | None = None) -> tuple[np.ndarray, str]:
+    """MossFormer2 48 kHz speech super-resolution, only where it's needed.
 
-    Detects where the recording's bandwidth runs out (phone ~4 kHz, laptop/Zoom
-    ~8 kHz, lossy MP3 ~16 kHz) and generates the missing high band with a
-    neural vocoder. The original audio below the cutoff is kept as-is.
+    Finds where the recording's bandwidth stops (or uses `above_hz`) and
+    generates the missing band above it with a neural vocoder; everything
+    below is kept as recorded. Full-band recordings are returned untouched.
     """
+    from . import progress
+    edge = above_hz or bandwidth_edge(audio)
+    if edge is None:
+        progress.fraction(1.0)
+        return audio, "rebuild skipped (full bandwidth)"
     _need_clearvoice()
     _install_band_fix()
-    _BAND_EDGE["hz"] = _detect_edge(audio)
+    cv = _cv("speech_super_resolution", "MossFormer2_SR_48K")
+    voc = cv.models[0].model[1]
+    window, stride = 4 * SR, 3 * SR
+    voc.count, voc.expected = 0, max(1, -(-(max(audio.size, window) - window) // stride) + 2)
+    _BAND_EDGE["hz"] = edge * 0.95 if above_hz is None else edge
     try:
-        return _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio)
+        y = _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio, whole=True)
     finally:
         _BAND_EDGE.clear()
+        voc.expected = 0
+    progress.fraction(1.0)
+    return y, f"rebuilt above {_fmt_hz(edge)}"
+
+
+def _fmt_hz(hz: float) -> str:
+    return f"{hz / 1000:.1f} kHz"
 
 
 # --- Apple AUSoundIsolation (macOS) ----------------------------------------------

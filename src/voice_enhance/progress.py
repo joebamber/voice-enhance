@@ -12,8 +12,8 @@ from contextlib import contextmanager
 
 from tqdm import tqdm
 
-WEIGHTS = {"decode": 1, "cleanup": 6, "guard": 3, "rebuild": 80, "tone": 2, "polish": 4, "loudness": 4}
-LABELS = {"decode": "reading", "cleanup": "cleaning up", "guard": "laughter guard", "rebuild": "rebuilding",
+WEIGHTS = {"decode": 1, "declip": 1, "cleanup": 6, "guard": 3, "dereverb": 1, "rebuild": 80, "tone": 2, "polish": 4, "loudness": 4}
+LABELS = {"decode": "reading", "declip": "fixing clipping", "cleanup": "cleaning up", "guard": "laughter guard", "dereverb": "dereverb", "rebuild": "rebuilding",
           "tone": "tone", "polish": "polishing", "loudness": "writing"}
 
 _active: "Progress | None" = None

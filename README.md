@@ -18,8 +18,11 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance
 
 | Command | What it does |
 |---|---|
-| `voice-enhance ep.wav` | Cleans up, rebuilds missing high frequencies, applies the warm tone and polishes. The output stays at the source recording's level (turned down only if it would otherwise clip), so loudness is left to the editor. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
-| `--no-rebuild` | Skips the rebuild: cleanup only, much faster. |
+| `voice-enhance ep.wav` | Repairs clipped peaks, cleans up noise, protects laughter, removes room reverb tails, rebuilds missing high frequencies (only if the recording is band-limited, e.g. phone or Zoom), and applies the warm tone. There's no compression or loudness normalisation: the output stays at the source level (turned down only if it would otherwise clip). Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
+| `--no-rebuild` | Skips the rebuild. |
+| `--rebuild-above 8000` | Forces the rebuild to regenerate everything above that frequency, even on full-band audio. |
+| `--dereverb 0.5` | Sets how hard to suppress reverb tails (default 1, 0 = off). |
+| `--no-declip` | Doesn't repair clipped peaks. |
 | `voice-enhance ep.wav --compare` | Renders every option into `ep_compare/`, all at the source level, for A/B listening. |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format (default: 24-bit WAV). |
