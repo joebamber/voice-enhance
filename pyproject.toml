@@ -1,14 +1,14 @@
 [project]
 name = "voice-enhance"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local, Adobe-Podcast-style speech enhancement: AI denoise + broadcast polish + loudness normalisation."
 readme = "README.md"
 requires-python = ">=3.10,<3.12"  # DeepFilterLib has no 3.12 wheels
 dependencies = [
     "deepfilternet==0.5.6",
     # deepfilternet 0.5.6 imports torchaudio.backend, removed in later torchaudio releases
-    "torch>=2.1,<2.6",
-    "torchaudio>=2.1,<2.6",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
     "numpy>=1.24,<2",
     "soundfile>=0.12",
     "scipy>=1.10",
