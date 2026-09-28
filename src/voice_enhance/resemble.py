@@ -80,8 +80,35 @@ def _run_dir() -> Path:
     return local / "enhancer_stage2"
 
 
-@lru_cache(maxsize=1)
-def _load():
+def _vocoder_on_cpu(model, dev, force: bool = False):
+    """UnivNet's kernel-predictor conv has >65536 output channels, which
+    Apple's GPU (MPS) refuses; run just the vocoder on the CPU."""
+    import torch
+    from torch import nn
+
+    class OnCPU(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner.to("cpu")
+
+        def forward(self, *args, **kwargs):
+            move = lambda v: v.to("cpu") if isinstance(v, torch.Tensor) else v
+            out = self.inner(*[move(a) for a in args], **{k: move(v) for k, v in kwargs.items()})
+            return out.to(dev)
+
+        def __getattr__(self, name):
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.inner, name)
+
+    if dev.type == "mps" or force:
+        model.vocoder = OnCPU(model.vocoder)
+    return model
+
+
+@lru_cache(maxsize=2)
+def _load(force_cpu: bool = False):
     import dataclasses
     import logging
     import torch
@@ -99,9 +126,9 @@ def _load():
     state = torch.load(run_dir / "ds" / "G" / "default" / "mp_rank_00_model_states.pt", map_location="cpu")
     model.load_state_dict(state["module"])
     model.eval()
-    dev = device()
+    dev = torch.device("cpu") if force_cpu else device()
     model.to(dev)
-    return model, dev
+    return _vocoder_on_cpu(model, dev), dev
 
 
 def _progress_trange():
@@ -124,7 +151,21 @@ def run(audio: np.ndarray, mode: str = "enhance", nfe: int = 64, denoise_first: 
     import torch
     import torchaudio.functional as AF
     from resemble_enhance.inference import inference
-    model, dev = _load()
+    try:
+        return _run(audio, mode, nfe, denoise_first, temperature, force_cpu=False)
+    except (RuntimeError, NotImplementedError, TypeError) as e:
+        if device().type != "mps":
+            raise
+        from . import progress
+        progress.write(f"  Apple GPU couldn't run part of Resemble ({str(e).splitlines()[0][:80]}); retrying on CPU")
+        return _run(audio, mode, nfe, denoise_first, temperature, force_cpu=True)
+
+
+def _run(audio, mode, nfe, denoise_first, temperature, force_cpu):
+    import torch
+    import torchaudio.functional as AF
+    from resemble_enhance.inference import inference
+    model, dev = _load(force_cpu)
     _progress_trange()
     x = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
     x = AF.resample(x, SR, MODEL_SR)
