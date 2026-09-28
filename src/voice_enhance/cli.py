@@ -19,7 +19,7 @@ from .declip import declip
 from .dereverb import dereverb
 from .protect import protect
 from .guard import GuardSettings, apply_guard
-from .tone import PROFILES, apply_eq, correction, target_from, with_presence
+from .tone import PROFILES, LOW_SPLIT_HZ, apply_eq, apply_eq_voice_only_lows, correction, target_from, with_presence
 
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus",
               ".caf", ".mov", ".mp4", ".mkv", ".webm"}
@@ -127,7 +127,7 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float, tone: str | None
     if toned:
         prog.stage("tone")
         curve = correction(audio, target, args.tone_amount)
-        audio = apply_eq(audio, curve)
+        audio = apply_eq_voice_only_lows(audio, curve)
     with tempfile.TemporaryDirectory() as td:
         a, b = Path(td) / "a.wav", Path(td) / "b.wav"
         save_wav(audio, a)
@@ -138,7 +138,8 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float, tone: str | None
             # little, so measure the polished result and trim once more.
             polished = load(b)
             trim = correction(polished, target, args.tone_amount)
-            trim = [(f, max(-6.0, min(6.0, g))) for f, g in trim]
+            # low end is handled per phrase above; only trim the mids/highs here
+            trim = [(f, max(-6.0, min(6.0, g)) if f >= LOW_SPLIT_HZ else 0.0) for f, g in trim]
             save_wav(apply_eq(polished, trim), b)
             if args.verbose:
                 total = {f: g for f, g in curve}

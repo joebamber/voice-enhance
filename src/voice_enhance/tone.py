@@ -85,3 +85,45 @@ def apply_eq(audio: np.ndarray, curve: list[tuple[int, float]], taps: int = 8191
     h = firwin2(taps, grid, 10 ** (lg / 20), fs=SR)
     y = fftconvolve(audio, h, mode="full")[taps // 2: taps // 2 + audio.size]
     return y.astype(np.float32)
+
+
+def voice_weight(audio: np.ndarray, above_db: float = 12.0, width_db: float = 6.0,
+                 attack_ms: float = 30.0, release_ms: float = 150.0) -> np.ndarray:
+    """0..1 per sample: how much voice is present (level relative to the local
+    noise floor), smoothed so it follows words and phrases, not waveforms."""
+    from .guard import _local_floor
+    frame = SR // 100
+    n = audio.size // frame
+    if n < 2:
+        return np.ones(audio.size, dtype=np.float32)
+    f = audio[: n * frame].reshape(n, frame).astype(np.float64)
+    lv = np.convolve(10 * np.log10((f ** 2).mean(1) + 1e-12), np.ones(3) / 3, mode="same")
+    floor = _local_floor(lv)
+    target = np.clip((lv - (floor + above_db - width_db)) / (2 * width_db), 0.0, 1.0)
+    a, r = 1 - np.exp(-10.0 / attack_ms), 1 - np.exp(-10.0 / release_ms)
+    w = np.empty(n)
+    cur = 0.0
+    for i, t in enumerate(target):
+        cur += (t - cur) * (a if t > cur else r)
+        w[i] = cur
+    return np.interp(np.arange(audio.size), (np.arange(n) + 0.5) * frame, w,
+                     left=float(w[0]), right=float(w[-1])).astype(np.float32)
+
+
+LOW_SPLIT_HZ = 300
+
+
+def apply_eq_voice_only_lows(audio: np.ndarray, curve: list[tuple[int, float]],
+                             pause_highpass_hz: float = 120.0) -> np.ndarray:
+    """The warm curve's low-end boost is for the *voice*. Applied statically it
+    also lifts room rumble, bumps and plosive thumps in the pauses (measured
+    +15 dB). So: full curve while someone is speaking; in pauses the same curve
+    with no boost below ~300 Hz and a gentle high-pass, crossfaded smoothly."""
+    from scipy.signal import butter, sosfiltfilt
+    warm = apply_eq(audio, curve)
+    flat_curve = [(f, min(g, 0.0) if f < LOW_SPLIT_HZ else g) for f, g in curve]
+    flat = apply_eq(audio, flat_curve)
+    sos = butter(4, pause_highpass_hz, "high", fs=SR, output="sos")
+    flat = sosfiltfilt(sos, flat).astype(np.float32)
+    w = voice_weight(audio)
+    return (w * warm + (1 - w) * flat).astype(np.float32)
