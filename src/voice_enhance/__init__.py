@@ -1,3 +1,3 @@
 """Local, Adobe-Podcast-style speech enhancement."""
 
-__version__ = "0.7.4"
+__version__ = "0.8.0"

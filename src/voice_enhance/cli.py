@@ -54,7 +54,7 @@ def ts(sec: float) -> str:
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
             gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False,
             dry: float = 1.0, rebuild_above: float | None = None,
-            repair_clipping: bool = True, protect_db: float = 18.0) -> tuple[np.ndarray, str]:
+            repair_clipping: bool = True, protect_db: float = 22.0) -> tuple[np.ndarray, str]:
     notes = []
     if repair_clipping:
         prog.stage("declip")
@@ -176,9 +176,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
                     help="force the rebuild to regenerate everything above this frequency (default: detect where "
                          "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
-    ap.add_argument("--protect", type=float, default=18.0, metavar="dB",
+    ap.add_argument("--protect", type=float, default=22.0, metavar="dB",
                     help="keep speech that's this far above the room noise from the original, so the AI can't duck "
-                         "it (default 18; 0 = off, higher = let the AI process more)")
+                         "it (default 22; 0 = off, higher = let the AI process more)")
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")

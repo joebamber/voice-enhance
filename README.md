@@ -26,7 +26,7 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 | `--temperature 0.3` | With `-b resemble`: sets Resemble's variation (default 0.5). Lower is steadier; higher sounds more natural but less consistent. |
 | `--denoise-first` | With `-b resemble`: makes Resemble run its denoiser before re-synthesis: stronger cleanup, but can sound more processed. |
 | `--no-declip` | Doesn't repair clipped peaks. |
-| `--protect 0` | Turns off speech protection. By default, speech well above the room noise (18 dB) comes from the original, so the AI can't duck loud syllables. Higher values let the AI process more. |
+| `--protect 0` | Turns off speech protection. By default, speech well above the room noise (22 dB) comes from the original, so the AI can't duck loud syllables. Higher values let the AI process more. |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. |
 | `voice-enhance ep.wav --compare` | Renders every engine and setting into `ep_compare/`, all at the source level, for A/B listening. |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. |
