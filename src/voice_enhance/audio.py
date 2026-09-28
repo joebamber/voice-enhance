@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -46,26 +45,19 @@ def save_wav(audio: np.ndarray, path: Path) -> None:
 
 
 # --- Polish chain ----------------------------------------------------------
-# Roughly what a podcast engineer would do after cleanup: remove rumble, take
-# out a little mud, add presence, tame sibilance, and level the dynamics.
-# Loudness normalisation is done separately (two-pass loudnorm).
-POLISH_FILTERS = [
-    "highpass=f=80:poles=2",
-    "equalizer=f=250:t=q:w=1.0:g=-2",     # mud / boxiness
-    "equalizer=f=4500:t=q:w=1.2:g=2.5",   # presence / clarity
-    "equalizer=f=11000:t=h:w=0.7:g=1.5",  # a touch of air (high shelf)
-    "deesser=i=0.35:m=0.5:f=0.5",
-    "acompressor=threshold=0.1:ratio=3:attack=8:release=160:knee=4",
-]
+# Level-independent: the cleaned voice is first brought to a fixed working
+# loudness so the compressor threshold means the same thing on every file.
+WORK_LUFS = -20.0
 
 
-def _loudnorm_measure(src: Path, pre_filters: list[str], lufs: float, tp: float, lra: float) -> dict:
-    chain = ",".join(pre_filters + [f"loudnorm=I={lufs}:TP={tp}:LRA={lra}:print_format=json"])
-    proc = _run(["ffmpeg", "-nostdin", "-hide_banner", "-i", str(src), "-af", chain, "-f", "null", "-"])
-    m = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", proc.stderr, re.S)
-    if not m:
-        raise RuntimeError("Could not parse loudnorm measurement output")
-    return json.loads(m.group(0))
+def polish_filters(toned: bool) -> list[str]:
+    return [
+        # sub-rumble only when the tone curve is shaping the low end, otherwise a normal voice high-pass
+        "highpass=f=50:poles=2" if toned else "highpass=f=70:poles=2",
+        "deesser=i=0.3:m=0.5:f=0.5",
+        # gentle 2:1 levelling, slow enough to keep the voice's natural movement
+        "acompressor=threshold=-19dB:ratio=2:attack=20:release=250:knee=6:detection=rms",
+    ]
 
 
 ENCODERS = {
@@ -78,26 +70,46 @@ ENCODERS = {
 }
 
 
-def finish(src: Path, dst: Path, *, polish: bool, lufs: float, tp: float, lra: float = 11.0) -> dict:
-    """Apply the polish chain + two-pass loudness normalisation and encode to dst.
+def _render(src: Path, dst: Path, filters: list[str], codec: list[str]) -> None:
+    _run(["ffmpeg", "-nostdin", "-hide_banner", "-y", "-i", str(src), "-af", ",".join(filters),
+          "-ar", str(SR), "-ac", "1", *codec, str(dst)])
 
-    Returns the loudnorm measurement of the finished file's input to the final stage.
+
+def polish_stage(src: Path, dst: Path, *, polish: bool, toned: bool = False) -> None:
+    """Bring to working loudness, then (optionally) high-pass, de-ess and level."""
+    m1 = measure(src)["lufs"]
+    if not np.isfinite(m1):
+        raise RuntimeError("Audio is silent after cleanup")
+    _render(src, dst, [f"volume={WORK_LUFS - m1:.2f}dB"] + (polish_filters(toned) if polish else []),
+            ["-c:a", "pcm_f32le"])
+
+
+def loudness_stage(src: Path, dst: Path, *, lufs: float, tp: float) -> None:
+    """Normalise to `lufs` with a true-peak ceiling of `tp` dBTP.
+
+    A static gain into an oversampled limiter, rather than ffmpeg's loudnorm,
+    which silently switches to dynamic compression on anything with a wide
+    range and flattens the delivery.
     """
+    import tempfile
     ext = dst.suffix.lower()
     if ext not in ENCODERS:
         raise SystemExit(f"Unsupported output format '{ext}'. Use one of: {', '.join(ENCODERS)}")
-    pre = POLISH_FILTERS if polish else []
-    meas = _loudnorm_measure(src, pre, lufs, tp, lra)
-    loudnorm = (
-        f"loudnorm=I={lufs}:TP={tp}:LRA={lra}"
-        f":measured_I={meas['input_i']}:measured_TP={meas['input_tp']}"
-        f":measured_LRA={meas['input_lra']}:measured_thresh={meas['input_thresh']}"
-        f":offset={meas['target_offset']}:linear=true"
-    )
-    chain = ",".join(pre + [loudnorm])
-    _run(["ffmpeg", "-nostdin", "-hide_banner", "-y", "-i", str(src), "-af", chain,
-          "-ar", str(SR), "-ac", "1", *ENCODERS[ext], str(dst)])
-    return meas
+    ceiling = 10 ** (tp / 20)
+
+    def chain(gain: float) -> list[str]:
+        return [f"volume={gain:.2f}dB", "aresample=192000",  # 4x oversampling ~ true peak
+                f"alimiter=limit={ceiling:.4f}:attack=1:release=60:level=0", f"aresample={SR}"]
+
+    gain = lufs - measure(src)["lufs"]
+    with tempfile.TemporaryDirectory() as td:
+        # The limiter shaves a little loudness off; measure and correct once.
+        probe = Path(td) / "probe.wav"
+        _render(src, probe, chain(gain), ["-c:a", "pcm_f32le"])
+        err = lufs - measure(probe)["lufs"]
+        if abs(err) > 0.15:
+            gain += err
+        _render(src, dst, chain(gain), ENCODERS[ext])
 
 
 def measure(path: Path) -> dict:

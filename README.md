@@ -12,8 +12,9 @@ The pipeline:
 1. **Decode.** Any audio/video ffmpeg can read, downmixed to mono at 48 kHz.
 2. **AI cleanup.** [DeepFilterNet 3](https://github.com/Rikorose/DeepFilterNet) by default. It removes noise and room tone and runs about 25x faster than real time on CPU.
 3. **Laughter guard.** See below.
-4. **Polish.** An 80 Hz high-pass, a small cut at 250 Hz (mud), presence at 4.5 kHz, a touch of air, a de-esser and a gentle 3:1 compressor.
-5. **Loudness.** Two-pass EBU R128 normalisation. The default target is -16 LUFS with a -1.5 dBTP ceiling.
+4. **Tone match.** A linear-phase EQ, worked out for each file, that moves the voice toward a target sound. The default is `warm`, measured from Adobe's output (see below).
+5. **Polish.** A de-esser and a gentle 2:1 compressor, run at a fixed working level so they behave the same on every file.
+6. **Loudness.** A static gain into a 4x-oversampled limiter. The default is -16 LUFS with a -1.5 dBTP ceiling. This deliberately avoids ffmpeg's `loudnorm`, which quietly switches to heavy compression on dynamic speech.
 
 ## Laughter guard
 
@@ -27,6 +28,24 @@ On the EV Café Peter Jones test file (Podcast 003, about 6:38), the full DeepFi
 --laughter-guard 0.85   # default; 0 = off, 1 = fully gentle during laughs
 -v                      # print the timestamps the guard protected, so you can spot-check them
 ```
+
+## Tone: why Adobe sounds warmer
+
+Measured on the Peter Jones episode, Adobe's output differs from a straight denoise mainly in two ways:
+
+- **Much more low end.** Around +15 to +20 dB at 80-125 Hz, which is the "rich", close-mic sound.
+- **Softer presence.** 5-9 dB less at 2-6 kHz, plus a gentler top end.
+
+`--tone warm` (the default) stores Adobe's long-term speech spectrum as a target. For each file it measures what the voice actually has and EQs the difference, so a thin mic gets more help than a full one. Boosts are capped, and nothing below 70 Hz is ever boosted. After compression it re-measures and trims once more. On the test episode the result lands within about 3 dB of Adobe across the spectrum.
+
+```
+--tone warm               # default, Adobe-like
+--tone neutral            # no tonal shaping, just a 70 Hz high-pass
+--tone ref.wav            # match any recording whose sound you like
+--tone-amount 0.6         # go 60% of the way
+```
+
+EQ can't copy everything Adobe does. Its model *regenerates* the voice, which adds harmonic density that no EQ can create. For that, try `-b clearvoice-sr`. The `warm` target was also measured on two male voices, so for very different voices a `--tone ref.wav` from a show you like is the better choice.
 
 ## Install (macOS)
 
@@ -66,4 +85,4 @@ voice-enhance --list-backends
 
 ## Tuning
 
-The polish chain lives in `POLISH_FILTERS` in `src/voice_enhance/audio.py` (plain ffmpeg filter syntax). The guard thresholds are in `GuardSettings` in `src/voice_enhance/guard.py`.
+The polish chain lives in `polish_filters()` in `src/voice_enhance/audio.py` (plain ffmpeg filter syntax). The tone targets and boost caps are in `src/voice_enhance/tone.py`. The guard thresholds are in `GuardSettings` in `src/voice_enhance/guard.py`.

@@ -11,9 +11,10 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
-from .audio import SR, finish, load, measure, require_ffmpeg, save_wav
+from .audio import SR, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
 from .backends import BACKENDS, available_backends, deepfilter
 from .guard import GuardSettings, apply_guard
+from .tone import PROFILES, apply_eq, correction, target_from
 
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus",
               ".caf", ".mov", ".mp4", ".mkv", ".webm"}
@@ -64,10 +65,27 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
 
 
 def render(audio: np.ndarray, dst: Path, args) -> None:
+    toned = not (args.no_polish or args.tone == "neutral" or args.tone_amount == 0)
+    if toned:
+        curve = correction(audio, args._target, args.tone_amount)
+        audio = apply_eq(audio, curve)
     with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td) / "stage.wav"
-        save_wav(audio, tmp)
-        finish(tmp, dst, polish=not args.no_polish, lufs=args.lufs, tp=args.true_peak)
+        a, b = Path(td) / "a.wav", Path(td) / "b.wav"
+        save_wav(audio, a)
+        polish_stage(a, b, polish=not args.no_polish, toned=toned)
+        if toned:
+            # Compression reacts to the extra low end and shifts the balance a
+            # little, so measure the polished result and trim once more.
+            polished = load(b)
+            trim = correction(polished, args._target, args.tone_amount)
+            trim = [(f, max(-6.0, min(6.0, g))) for f, g in trim]
+            save_wav(apply_eq(polished, trim), b)
+            if args.verbose:
+                total = {f: g for f, g in curve}
+                for f, g in trim:
+                    total[f] += g
+                log("    tone: " + " ".join(f"{f}:{g:+.0f}" for f, g in total.items() if abs(g) >= 1))
+        loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
     m = measure(dst)
     log(f"    -> {dst.name}  ({m['lufs']:.1f} LUFS, peak {m['true_peak']:.1f} dBTP)")
 
@@ -89,6 +107,11 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
     ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
                     help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
+    ap.add_argument("--tone", default="warm",
+                    help="tone target: 'warm' (Adobe-like, default), 'neutral' (no tonal shaping), "
+                         "or a path to a reference recording whose sound you want to match")
+    ap.add_argument("--tone-amount", type=float, default=1.0, metavar="0-1",
+                    help="how far to move toward the tone target (default 1.0)")
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
     ap.add_argument("--list-backends", action="store_true", help="show which backends work on this machine")
@@ -104,6 +127,12 @@ def main(argv: list[str] | None = None) -> None:
     require_ffmpeg()
     if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1:
         raise SystemExit("--mix and --laughter-guard must be between 0 and 1")
+    if not 0 <= args.tone_amount <= 1:
+        raise SystemExit("--tone-amount must be between 0 and 1")
+    if args.tone != "neutral":
+        if args.tone not in PROFILES and not Path(args.tone).expanduser().exists():
+            raise SystemExit(f"--tone must be warm, neutral, or an existing reference file (got {args.tone})")
+        args._target = target_from(args.tone)
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
     files = gather(args.inputs)
@@ -126,7 +155,7 @@ def main(argv: list[str] | None = None) -> None:
             with tempfile.TemporaryDirectory() as td:
                 t = Path(td) / "o.wav"
                 save_wav(audio, t)
-                finish(t, folder / f"0_original{fmt}", polish=False, lufs=args.lufs, tp=args.true_peak)
+                loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
             n = 1
             for b in available_backends():
                 variants = ([("polish-only", guard)] if b == "none"
