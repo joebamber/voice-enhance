@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 WEIGHTS = {"decode": 1, "cleanup": 6, "guard": 3, "rebuild": 80, "tone": 2, "polish": 4, "loudness": 4}
 LABELS = {"decode": "reading", "cleanup": "cleaning up", "guard": "laughter guard", "rebuild": "rebuilding",
-          "tone": "tone", "polish": "polishing", "loudness": "loudness"}
+          "tone": "tone", "polish": "polishing", "loudness": "writing"}
 
 _active: "Progress | None" = None
 

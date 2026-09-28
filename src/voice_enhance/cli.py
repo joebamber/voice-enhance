@@ -13,7 +13,7 @@ import numpy as np
 
 from . import __version__
 from . import progress as prog
-from .audio import SR, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
+from .audio import SR, level_stage, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
 from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
 from .guard import GuardSettings, apply_guard
 from .tone import PROFILES, apply_eq, correction, target_from, with_presence
@@ -95,7 +95,7 @@ def short(name: str, n: int = 28) -> str:
     return name if len(name) <= n else name[: n - 1] + "…"
 
 
-def render(audio: np.ndarray, dst: Path, args) -> str:
+def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
     toned = is_toned(args)
     if toned:
         prog.stage("tone")
@@ -119,9 +119,19 @@ def render(audio: np.ndarray, dst: Path, args) -> str:
                     total[f] += g
                 log("    tone: " + " ".join(f"{f}:{g:+.0f}" for f, g in total.items() if abs(g) >= 1))
         prog.stage("loudness")
-        loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
+        if args.lufs is not None:
+            loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
+        else:
+            level_stage(b, dst, ref_lufs=ref_lufs)
     m = measure(dst)
     return f"{dst.name}  ({m['lufs']:.1f} LUFS, peak {m['true_peak']:.1f} dBTP)"
+
+
+def source_lufs(audio: np.ndarray) -> float:
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td) / "src.wav"
+        save_wav(audio, t)
+        return measure(t)["lufs"]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -139,8 +149,10 @@ def main(argv: list[str] | None = None) -> None:
                     help="render every backend with and without the laughter guard and the rebuild "
                          "into <name>_compare/ for A/B listening")
     ap.add_argument("-f", "--format", default="wav", help="output format: wav, flac, m4a, mp3, aiff (default wav)")
-    ap.add_argument("--lufs", type=float, default=-16.0, help="target loudness (default -16; use -19 for mono spec)")
-    ap.add_argument("--true-peak", type=float, default=-1.5, help="true-peak ceiling in dBTP (default -1.5)")
+    ap.add_argument("--lufs", type=float, default=None,
+                    help="normalise to this loudness with a true-peak limiter (off by default: output stays at the "
+                         "source recording's level, loudness is left to the editor)")
+    ap.add_argument("--true-peak", type=float, default=-1.5, help="true-peak ceiling in dBTP when --lufs is used (default -1.5)")
     ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
     ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
                     help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
@@ -208,11 +220,15 @@ def main(argv: list[str] | None = None) -> None:
             folder = base / f"{src.stem}_compare"
             folder.mkdir(parents=True, exist_ok=True)
             # Original at matched loudness (no EQ) so the comparison is fair.
-            log("  original (loudness-matched only)")
+            ref = source_lufs(audio)
+            log("  original" + (" (loudness-matched only)" if args.lufs is not None else ""))
             with tempfile.TemporaryDirectory() as td:
                 t = Path(td) / "o.wav"
                 save_wav(audio, t)
-                loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
+                if args.lufs is not None:
+                    loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
+                else:
+                    level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
             n = 1
             can_rebuild = "clearvoice" in available_backends()
             for b in available_backends():
@@ -228,7 +244,7 @@ def main(argv: list[str] | None = None) -> None:
                     with prog.progress(short(f"{n}_{label}", 30), stages_for(args, b, g, rb, decode=False)):
                         y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
                                           verbose=args.verbose, rebuild_hf=rb)
-                        result = render(y, folder / f"{n}_{label}{fmt}", args)
+                        result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
                     log(f"  -> {result}")
                     if args.verbose:
                         log(f"    {note}")
@@ -248,7 +264,7 @@ def main(argv: list[str] | None = None) -> None:
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
                               rebuild_hf=args.rebuild, verbose=args.verbose)
-            result = render(y, dst, args)
+            result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)
         log(f"  -> {result}  [{audio.size / SR / 60:.1f} min audio in {int(mins)}m{int(secs):02d}s]")
         if args.verbose:

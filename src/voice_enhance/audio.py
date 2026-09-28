@@ -25,10 +25,25 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     return proc
 
 
+def _channels(path: Path) -> int:
+    proc = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                           "stream=channels", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    try:
+        return max(1, int(proc.stdout.strip().splitlines()[0]))
+    except (ValueError, IndexError):
+        return 1
+
+
 def load(path: Path) -> np.ndarray:
-    """Decode any audio/video file to mono float32 at 48 kHz."""
+    """Decode any audio/video file to mono float32 at 48 kHz.
+
+    Channels are averaged, so dual-mono recordings keep their exact level
+    (ffmpeg's default downmix adds +3 dB and can push peaks over 0 dBFS).
+    """
+    n = _channels(path)
+    mix = ["-af", "pan=mono|c0=" + "+".join(f"{1 / n:.6f}*c{i}" for i in range(n))] if n > 1 else []
     proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vn",
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vn", *mix,
          "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
         capture_output=True,
     )
@@ -82,6 +97,28 @@ def polish_stage(src: Path, dst: Path, *, polish: bool, toned: bool = False) -> 
         raise RuntimeError("Audio is silent after cleanup")
     _render(src, dst, [f"volume={WORK_LUFS - m1:.2f}dB"] + (polish_filters(toned) if polish else []),
             ["-c:a", "pcm_f32le"])
+
+
+def level_stage(src: Path, dst: Path, *, ref_lufs: float, headroom_db: float = -1.0) -> float:
+    """Put the processed audio back at the source recording's level.
+
+    No loudness normalisation, compression or limiting: a single static gain
+    so the file drops into the edit at the same level as the raw recording.
+    If that would push a sample above `headroom_db` dBFS, the whole file is
+    turned down just enough instead, so it never clips. Returns the gain in dB.
+    """
+    import soundfile as sf
+    ext = dst.suffix.lower()
+    if ext not in ENCODERS:
+        raise SystemExit(f"Unsupported output format '{ext}'. Use one of: {', '.join(ENCODERS)}")
+    x, _ = sf.read(str(src), dtype="float32")
+    gain = ref_lufs - measure(src)["lufs"] if np.isfinite(ref_lufs) else 0.0
+    peak = float(np.abs(x).max()) or 1e-9
+    peak_db = 20 * np.log10(peak)
+    if peak_db + gain > headroom_db:
+        gain = headroom_db - peak_db
+    _render(src, dst, [f"volume={gain:.3f}dB"], ENCODERS[ext])
+    return gain
 
 
 def loudness_stage(src: Path, dst: Path, *, lufs: float, tp: float) -> None:

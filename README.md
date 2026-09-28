@@ -18,13 +18,13 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance
 
 | Command | What it does |
 |---|---|
-| `voice-enhance ep.wav` | Cleans up, rebuilds missing high frequencies, applies the warm tone, polishes and normalises to -16 LUFS. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
+| `voice-enhance ep.wav` | Cleans up, rebuilds missing high frequencies, applies the warm tone and polishes. The output stays at the source recording's level (turned down only if it would otherwise clip), so loudness is left to the editor. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
 | `--no-rebuild` | Skips the rebuild: cleanup only, much faster. |
-| `voice-enhance ep.wav --compare` | Renders every option into `ep_compare/`, all at the same loudness, for A/B listening. |
+| `voice-enhance ep.wav --compare` | Renders every option into `ep_compare/`, all at the source level, for A/B listening. |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format (default: 24-bit WAV). |
-| `--lufs -19` | Sets the loudness target (default -16). |
-| `--true-peak -1` | Sets the peak ceiling in dBTP (default -1.5). |
+| `--lufs -16` | Opt-in loudness normalisation plus a true-peak limiter (off by default). |
+| `--true-peak -1` | Sets the limiter ceiling when `--lufs` is used (default -1.5 dBTP). |
 | `-b clearvoice` / `-b apple` / `-b none` | Picks the cleanup engine (default: DeepFilterNet). |
 | `--laughter-guard 0.5` | Sets how much laughter to protect from the cleanup (0 = off, default 0.85). |
 | `-v` | Lists the timestamps where the laughter guard kicked in. |
