@@ -14,7 +14,7 @@ from . import __version__
 from .audio import SR, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
 from .backends import BACKENDS, available_backends, deepfilter
 from .guard import GuardSettings, apply_guard
-from .tone import PROFILES, apply_eq, correction, target_from
+from .tone import PROFILES, apply_eq, correction, target_from, with_presence
 
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus",
               ".caf", ".mov", ".mp4", ".mkv", ".webm"}
@@ -112,6 +112,8 @@ def main(argv: list[str] | None = None) -> None:
                          "or a path to a reference recording whose sound you want to match")
     ap.add_argument("--tone-amount", type=float, default=1.0, metavar="0-1",
                     help="how far to move toward the tone target (default 1.0)")
+    ap.add_argument("--presence", type=float, default=5.0, metavar="dB",
+                    help="clarity: lift 3-8 kHz relative to the tone target (default +5; 0 = exactly the target)")
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
     ap.add_argument("--list-backends", action="store_true", help="show which backends work on this machine")
@@ -132,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.tone != "neutral":
         if args.tone not in PROFILES and not Path(args.tone).expanduser().exists():
             raise SystemExit(f"--tone must be warm, neutral, or an existing reference file (got {args.tone})")
-        args._target = target_from(args.tone)
+        args._target = with_presence(target_from(args.tone), args.presence)
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
     files = gather(args.inputs)

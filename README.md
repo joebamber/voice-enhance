@@ -43,7 +43,11 @@ Measured on the Peter Jones episode, Adobe's output differs from a straight deno
 --tone neutral            # no tonal shaping, just a 70 Hz high-pass
 --tone ref.wav            # match any recording whose sound you like
 --tone-amount 0.6         # go 60% of the way
+--presence 5              # default: lift 3-8 kHz by 5 dB relative to the target
+--presence 0              # exactly Adobe's balance (warmest, least clear)
 ```
+
+Adobe's balance by itself sounds slightly dull without its regenerated detail, so by default `--presence` gives back the 3-8 kHz clarity region while keeping the warm low end.
 
 EQ can't copy everything Adobe does. Its model *regenerates* the voice, which adds harmonic density that no EQ can create. For that, try `-b clearvoice-sr`. The `warm` target was also measured on two male voices, so for very different voices a `--tone ref.wav` from a show you like is the better choice.
 

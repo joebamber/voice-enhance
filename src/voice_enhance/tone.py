@@ -50,6 +50,17 @@ def target_from(ref: str) -> np.ndarray:
     return profile(load(Path(ref).expanduser()))
 
 
+# Where clarity lives: full weight 3-8 kHz (consonants, 'air' of the voice),
+# nothing below 1.6 kHz so it doesn't turn nasal/honky.
+_PRES_W = np.interp(np.log10(BANDS), np.log10([1600, 3000, 8000, 12500, 16000]), [0.0, 1.0, 1.0, 0.6, 0.3])
+
+
+def with_presence(target: np.ndarray, presence_db: float) -> np.ndarray:
+    """Lift (or drop) the 3-8 kHz region of a tone target. Keeps the warm low end
+    but gives back clarity that the Adobe-derived curve takes away."""
+    return target + presence_db * _PRES_W
+
+
 def correction(audio: np.ndarray, target: np.ndarray, amount: float = 1.0) -> list[tuple[int, float]]:
     diff = target - profile(audio)
     diff = np.convolve(np.pad(diff, 1, mode="edge"), [0.25, 0.5, 0.25], mode="valid")  # smooth across bands
