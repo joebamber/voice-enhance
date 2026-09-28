@@ -17,6 +17,7 @@ from .audio import SR, level_stage, load, loudness_stage, measure, polish_stage,
 from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
 from .declip import declip
 from .dereverb import dereverb
+from .protect import protect
 from .guard import GuardSettings, apply_guard
 from .tone import PROFILES, apply_eq, correction, target_from, with_presence
 
@@ -53,7 +54,7 @@ def ts(sec: float) -> str:
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
             gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False,
             dry: float = 1.0, rebuild_above: float | None = None,
-            repair_clipping: bool = True) -> tuple[np.ndarray, str]:
+            repair_clipping: bool = True, protect_db: float = 18.0) -> tuple[np.ndarray, str]:
     notes = []
     if repair_clipping:
         prog.stage("declip")
@@ -64,6 +65,11 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     prog.stage("cleanup")
     cleaned = BACKENDS[backend](audio)
     notes.append(f"{backend} {time.time() - t:.1f}s")
+    # Mask-based cleaners stay sample-aligned with the input, so loud (already
+    # clean) speech can come from the original; generative ones can't be blended.
+    if protect_db > 0 and backend in ("deepfilter", "clearvoice", "resemble-denoise"):
+        cleaned, frac = protect(audio, cleaned, clean_above_db=protect_db)
+        notes.append(f"loud speech kept from the original {frac * 100:.0f}% of the time")
     note = ", ".join(notes)
     if backend != "none" and guard and guard.strength > 0:
         prog.stage("guard")
@@ -169,6 +175,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
                     help="force the rebuild to regenerate everything above this frequency (default: detect where "
                          "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
+    ap.add_argument("--protect", type=float, default=18.0, metavar="dB",
+                    help="keep speech that's this far above the room noise from the original, so the AI can't duck "
+                         "it (default 18; 0 = off, higher = let the AI process more)")
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
@@ -287,7 +296,7 @@ def main(argv: list[str] | None = None) -> None:
                                    stages_for(args, b, g, args.rebuild, decode=False, tone=tone), backend=b):
                     y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
                                       verbose=args.verbose, rebuild_hf=args.rebuild, dry=args.dereverb,
-                                      repair_clipping=args.declip, rebuild_above=args.rebuild_above)
+                                      repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above)
                     result = render(y, folder / f"{n}_{label}{fmt}", args, ref, tone=tone)
                 log(f"  -> {result}")
                 log(f"     {note}")
@@ -306,7 +315,7 @@ def main(argv: list[str] | None = None) -> None:
             prog.stage("decode")
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
-                              rebuild_hf=args.rebuild, verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip,
+                              rebuild_hf=args.rebuild, verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip, protect_db=args.protect,
                               rebuild_above=args.rebuild_above)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)
