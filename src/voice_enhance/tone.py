@@ -77,13 +77,14 @@ def correction(audio: np.ndarray, target: np.ndarray, amount: float = 1.0) -> li
 
 def apply_eq(audio: np.ndarray, curve: list[tuple[int, float]], taps: int = 8191) -> np.ndarray:
     """Linear-phase FIR EQ (delay-compensated, so it stays sample-aligned)."""
-    from scipy.signal import fftconvolve, firwin2
+    from scipy.signal import firwin2, oaconvolve
     fb = np.array([f for f, _ in curve], dtype=float)
     gb = np.array([g for _, g in curve], dtype=float)
     grid = np.linspace(0, SR / 2, 2049)
     lg = np.interp(np.log10(np.maximum(grid, 1.0)), np.log10(fb), gb)  # flat beyond the end bands
     h = firwin2(taps, grid, 10 ** (lg / 20), fs=SR)
-    y = fftconvolve(audio, h, mode="full")[taps // 2: taps // 2 + audio.size]
+    # overlap-add: memory stays flat on hour-long files (one giant FFT needed GBs)
+    y = oaconvolve(audio, h.astype(np.float32), mode="full")[taps // 2: taps // 2 + audio.size]
     return y.astype(np.float32)
 
 
@@ -135,14 +136,32 @@ def apply_eq_voice_only_lows(audio: np.ndarray, curve: list[tuple[int, float]],
     return (w * warm + (1 - w) * flat).astype(np.float32)
 
 
-def voice_floor_hz(audio: np.ndarray) -> float:
+def voice_floor_hz(audio: np.ndarray, samples: int = 30, seg_s: float = 2.0) -> float:
     """Lowest fundamental the speakers actually use (5th percentile of pitch on
     voiced frames). Nothing below this is voice -- it's rumble, handling noise
-    and room boom -- so it should never be boosted, and can be removed."""
+    and room boom -- so it should never be boosted, and can be removed.
+
+    Pitch tracking is slow, so it runs on ~60 s of the loudest passages spread
+    across the file rather than the whole recording (an hour-long episode used
+    to sit on this step for minutes)."""
     import librosa
-    y = librosa.resample(audio.astype(np.float32), orig_sr=SR, target_sr=16000)
-    f0, voiced, _ = librosa.pyin(y, fmin=55, fmax=400, sr=16000, frame_length=1024, hop_length=320)
-    f0 = f0[voiced & np.isfinite(f0)] if f0 is not None else np.array([])
+    seg = int(seg_s * SR)
+    n = audio.size // seg
+    if n == 0:
+        pick = [audio]
+    else:
+        segs = audio[: n * seg].reshape(n, seg)
+        energy = (segs.astype(np.float64) ** 2).mean(1)
+        # the loudest segment from each of `samples` stretches of the file
+        groups = np.array_split(np.arange(n), min(samples, n))
+        pick = [segs[g[np.argmax(energy[g])]] for g in groups if len(g)]
+    f0s = []
+    for s_ in pick:
+        y = librosa.resample(s_.astype(np.float32), orig_sr=SR, target_sr=16000)
+        f0, voiced, _ = librosa.pyin(y, fmin=55, fmax=400, sr=16000, frame_length=1024, hop_length=320)
+        if f0 is not None:
+            f0s.append(f0[voiced & np.isfinite(f0)])
+    f0 = np.concatenate(f0s) if f0s else np.array([])
     if f0.size < 50:
         return 80.0
     return float(np.clip(np.percentile(f0, 5), 60.0, 200.0))
