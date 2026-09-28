@@ -4,8 +4,13 @@ Local, Adobe-Podcast-style speech cleanup. It runs entirely on your Mac.
 
 ## Install
 
+### In homebrew
 ```
 brew install ffmpeg uv
+```
+
+### In the root folder
+```
 uv tool install --python 3.11 '.[clearvoice]' --force --reinstall-package voice-enhance
 ```
 
