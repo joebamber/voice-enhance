@@ -169,6 +169,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
                     help="force the rebuild to regenerate everything above this frequency (default: detect where "
                          "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
+    ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
+                    help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
+                         "room tone instead of dead silence, which avoids watery/warbly artefacts")
     ap.add_argument("--quality", type=int, default=64, metavar="STEPS",
                     help="resemble: generation steps (default 64; 32 is ~2x faster, slightly rougher; up to 128)")
     ap.add_argument("--temperature", type=float, default=0.5, metavar="0-1",
@@ -239,6 +242,8 @@ def main(argv: list[str] | None = None) -> None:
     else:
         args._targets = {}
     args._targets.setdefault("warm", with_presence(target_from("warm"), args.presence, args.warmth))
+    from . import backends as _b
+    _b.DF_SETTINGS["max_reduction_db"] = args.max_reduction
     from . import resemble
     if not 1 <= args.quality <= 128 or not 0 <= args.temperature <= 1:
         raise SystemExit("--quality must be 1-128 and --temperature 0-1")

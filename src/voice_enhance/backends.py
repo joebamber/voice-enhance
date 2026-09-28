@@ -358,10 +358,13 @@ def _resemble(mode):
     return f
 
 
+DF_SETTINGS = {"max_reduction_db": None}  # set from --max-reduction
+
+
 BACKENDS = {
     "resemble": _resemble("enhance"),
     "resemble-denoise": _resemble("denoise"),
-    "deepfilter": lambda a: deepfilter(a),
+    "deepfilter": lambda a: deepfilter(a, atten_lim_db=DF_SETTINGS["max_reduction_db"]),
     "clearvoice": lambda a: clearvoice(a),
     "apple": lambda a: apple(a),
     "none": lambda a: a.copy(),
