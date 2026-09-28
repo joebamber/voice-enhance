@@ -219,6 +219,40 @@ def clearvoice(audio: np.ndarray) -> np.ndarray:
     return _cv_run("speech_enhancement", "MossFormer2_SE_48K", audio)
 
 
+_BAND_EDGE: dict = {}
+
+
+def _detect_edge(audio: np.ndarray) -> float:
+    """Where the recording's real bandwidth ends (Hz): ClearVoice's own rule
+    (99% of energy below it), measured once over the whole file and clamped."""
+    from clearvoice.utils import bandwidth_sub as bs
+    x = audio[np.isfinite(audio)]
+    if x.size == 0 or float(np.sum(x.astype(np.float64) ** 2)) < 1e-9:
+        return 0.95 * SR / 2
+    _, f_high = bs.detect_bandwidth(x, SR)
+    return float(np.clip(f_high, 1000.0, 0.95 * SR / 2))
+
+
+def _install_band_fix() -> None:
+    """ClearVoice re-detects the bandwidth for every piece it processes. On a
+    silent piece that gives 0 Hz and scipy raises; it also lets the cutoff
+    jump around from piece to piece. Use one cutoff for the whole file."""
+    import clearvoice.utils.decode as dec
+    from clearvoice.utils import bandwidth_sub as bs
+    if getattr(dec.bandwidth_sub, "_voice_enhance", False):
+        return
+
+    def fixed_bandwidth_sub(low, high, fs=48000):
+        low = np.asarray(low, dtype=np.float64)
+        high = np.asarray(high, dtype=np.float64)
+        f_high = _BAND_EDGE.get("hz") or _detect_edge(low.astype(np.float32))
+        replaced = bs.replace_bandwidth(low, high, fs, 0.0, f_high)
+        return bs.smooth_transition(replaced, low, fs)
+
+    fixed_bandwidth_sub._voice_enhance = True
+    dec.bandwidth_sub = fixed_bandwidth_sub
+
+
 def rebuild(audio: np.ndarray) -> np.ndarray:
     """MossFormer2 48 kHz speech super-resolution.
 
@@ -227,7 +261,12 @@ def rebuild(audio: np.ndarray) -> np.ndarray:
     neural vocoder. The original audio below the cutoff is kept as-is.
     """
     _need_clearvoice()
-    return _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio)
+    _install_band_fix()
+    _BAND_EDGE["hz"] = _detect_edge(audio)
+    try:
+        return _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio)
+    finally:
+        _BAND_EDGE.clear()
 
 
 # --- Apple AUSoundIsolation (macOS) ----------------------------------------------
