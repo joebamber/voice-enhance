@@ -123,8 +123,14 @@ def _in_dir(path: Path):
 @lru_cache(maxsize=2)
 def _cv(task: str, model: str):
     from clearvoice import ClearVoice
-    with _in_dir(CACHE / "clearvoice"):
-        return ClearVoice(task=task, model_names=[model])
+    with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        cv = ClearVoice(task=task, model_names=[model])
+    # Always use ClearVoice's own 4 s sliding window; one-pass decoding of 20 s
+    # needs several GB of memory.
+    for m in cv.models:
+        m.args.one_time_decode_length = 4
+    return cv
 
 
 def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
@@ -134,22 +140,38 @@ def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "in.wav"
             save_wav(seg, p)
-            with _in_dir(CACHE / "clearvoice"):
+            with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings():
+                warnings.simplefilter("ignore")
                 y = cv(input_path=str(p), online_write=False)
         if isinstance(y, dict):
             y = next(iter(y.values()))
         return np.asarray(y, dtype=np.float32).reshape(-1)
 
-    return chunked(run, audio)
+    # 30 s pieces keep memory modest on the GPU/Neural path; crossfaded back together
+    return chunked(run, audio, chunk_s=30.0)
 
 
-def clearvoice(audio: np.ndarray, super_resolution: bool = False) -> np.ndarray:
+def _need_clearvoice() -> None:
     if not clearvoice_available():
-        raise SystemExit("ClearVoice isn't installed. Reinstall with: uv tool install '.[clearvoice]'")
-    y = _cv_run("speech_enhancement", "MossFormer2_SE_48K", audio)
-    if super_resolution:
-        y = _cv_run("speech_super_resolution", "MossFormer2_SR_48K", y)
-    return y
+        raise SystemExit("ClearerVoice isn't installed. Reinstall with:\n"
+                         "  uv tool install --python 3.11 '.[clearvoice]' --force")
+
+
+def clearvoice(audio: np.ndarray) -> np.ndarray:
+    """MossFormer2 48 kHz speech enhancement (cleanup only)."""
+    _need_clearvoice()
+    return _cv_run("speech_enhancement", "MossFormer2_SE_48K", audio)
+
+
+def rebuild(audio: np.ndarray) -> np.ndarray:
+    """MossFormer2 48 kHz speech super-resolution.
+
+    Detects where the recording's bandwidth runs out (phone ~4 kHz, laptop/Zoom
+    ~8 kHz, lossy MP3 ~16 kHz) and generates the missing high band with a
+    neural vocoder. The original audio below the cutoff is kept as-is.
+    """
+    _need_clearvoice()
+    return _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio)
 
 
 # --- Apple AUSoundIsolation (macOS) ----------------------------------------------
@@ -192,7 +214,6 @@ def apple(audio: np.ndarray) -> np.ndarray:
 BACKENDS = {
     "deepfilter": lambda a: deepfilter(a),
     "clearvoice": lambda a: clearvoice(a),
-    "clearvoice-sr": lambda a: clearvoice(a, super_resolution=True),
     "apple": lambda a: apple(a),
     "none": lambda a: a.copy(),
 }
@@ -203,5 +224,5 @@ def available_backends() -> list[str]:
     if apple_available():
         names.append("apple")
     if clearvoice_available():
-        names += ["clearvoice", "clearvoice-sr"]
+        names.append("clearvoice")
     return names

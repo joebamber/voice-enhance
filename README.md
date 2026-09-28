@@ -49,7 +49,28 @@ Measured on the Peter Jones episode, Adobe's output differs from a straight deno
 
 Adobe's balance by itself sounds slightly dull without its regenerated detail, so by default `--presence` gives back the 3-8 kHz clarity region while keeping the warm low end.
 
-EQ can't copy everything Adobe does. Its model *regenerates* the voice, which adds harmonic density that no EQ can create. For that, try `-b clearvoice-sr`. The `warm` target was also measured on two male voices, so for very different voices a `--tone ref.wav` from a show you like is the better choice.
+EQ can't copy everything Adobe does. Its model *regenerates* the voice, which adds harmonic density that no EQ can create. For that, see **Rebuilding thin audio** below. The `warm` target was also measured on two male voices, so for very different voices a `--tone ref.wav` from a show you like is the better choice.
+
+## Rebuilding thin audio
+
+```
+voice-enhance zoom-call.wav --rebuild
+```
+
+`--rebuild` runs ClearerVoice's MossFormer2 super-resolution model after cleanup and the laughter guard. It finds where the recording's bandwidth runs out (about 4 kHz for a phone, about 8 kHz for a laptop or Zoom, about 16 kHz for a low-bitrate MP3) and generates the missing high band with a neural vocoder. Everything below that cutoff is left as recorded. It runs after the guard, so laughs get rebuilt along with the speech.
+
+- It rebuilds the *top* end (clarity, air, crisp consonants). It doesn't invent low end; the `warm` tone handles that.
+- It's generative, so listen for artefacts, especially on laughter and sibilance.
+- It's much slower than the cleanup. It uses the Apple Silicon GPU where it can and falls back to the CPU otherwise.
+- It needs the optional extra: `uv tool install --python 3.11 '.[clearvoice]' --force`.
+
+To try everything at once:
+
+```
+./scripts/try-rebuild.sh
+```
+
+This installs the extra and renders `--compare` sets for `out/laugh-test.wav`, plus a phone-quality version (`out/thin/phone.wav`, cut off at about 4 kHz) and a Zoom/laptop-quality version (`out/thin/laptop-zoom.wav`, 16 kHz at 32 kbps MP3). The results land in `out/rebuild-test/`.
 
 ## Install (macOS)
 
@@ -82,9 +103,8 @@ voice-enhance --list-backends
 | `-b` | What | Notes |
 |---|---|---|
 | `deepfilter` (default) | DeepFilterNet 3 | Fast, natural, doesn't invent audio. Tested. |
-| `apple` | macOS AUSoundIsolation (the engine behind Voice Isolation in FCP/Logic) | Compiles a small Swift helper on first use (needs Xcode CLT). **Not yet tested on a Mac.** |
-| `clearvoice` | ClearerVoice-Studio MossFormer2 SE 48 kHz | Optional extra; weights from Hugging Face. **Not yet tested.** |
-| `clearvoice-sr` | as above + MossFormer2 super-resolution | The closest to Adobe's "rebuild a thin mic" effect. **Not yet tested.** |
+| `apple` | macOS AUSoundIsolation (the engine behind Voice Isolation in FCP/Logic); left out of `--compare` | Compiles a small Swift helper on first use (needs Xcode CLT). **Not yet tested on a Mac.** |
+| `clearvoice` | ClearerVoice-Studio MossFormer2 SE 48 kHz | Optional extra; weights from Hugging Face. Code path tested, real weights not yet. |
 | `none` | polish + loudness only | |
 
 ## Tuning

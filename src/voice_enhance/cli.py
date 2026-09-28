@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 import time
@@ -12,7 +13,7 @@ import numpy as np
 
 from . import __version__
 from .audio import SR, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
-from .backends import BACKENDS, available_backends, deepfilter
+from .backends import BACKENDS, available_backends, deepfilter, rebuild
 from .guard import GuardSettings, apply_guard
 from .tone import PROFILES, apply_eq, correction, target_from, with_presence
 
@@ -47,7 +48,7 @@ def ts(sec: float) -> str:
 
 
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
-            gentle_cache: dict, verbose: bool = False) -> tuple[np.ndarray, str]:
+            gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False) -> tuple[np.ndarray, str]:
     t = time.time()
     cleaned = BACKENDS[backend](audio)
     note = f"{backend} {time.time() - t:.1f}s"
@@ -61,6 +62,12 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
             note += "\n      at " + ", ".join(f"{ts(a)} ({b - a:.1f}s)" for a, b in regions)
     if mix < 1.0:
         cleaned = mix * cleaned + (1 - mix) * audio
+    if rebuild_hf:
+        # after the guard, so laughs get rebuilt too instead of flipping between
+        # a rebuilt and an un-rebuilt version
+        t = time.time()
+        cleaned = rebuild(cleaned)
+        note += f", rebuild {time.time() - t:.1f}s"
     return cleaned, note
 
 
@@ -99,8 +106,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-o", "--output", help="output file (single input) or folder")
     ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
                     help="cleanup engine (default: deepfilter)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="regenerate missing high frequencies on thin recordings (phone, laptop, Zoom, low-bitrate MP3); "
+                         "needs the clearvoice extra")
     ap.add_argument("--compare", action="store_true",
-                    help="render every available backend (+ guard on/off) into <name>_compare/ for A/B listening")
+                    help="render every available backend (guard on/off, and with --rebuild if installed) "
+                         "into <name>_compare/ for A/B listening")
     ap.add_argument("-f", "--format", default="wav", help="output format: wav, flac, m4a, mp3, aiff (default wav)")
     ap.add_argument("--lufs", type=float, default=-16.0, help="target loudness (default -16; use -19 for mono spec)")
     ap.add_argument("--true-peak", type=float, default=-1.5, help="true-peak ceiling in dBTP (default -1.5)")
@@ -119,6 +130,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--list-backends", action="store_true", help="show which backends work on this machine")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)
+    # Apple Silicon GPU: let any op PyTorch hasn't implemented on MPS fall back to CPU
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
     if args.list_backends:
         print("\n".join(available_backends()))
@@ -159,13 +172,20 @@ def main(argv: list[str] | None = None) -> None:
                 save_wav(audio, t)
                 loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
             n = 1
+            can_rebuild = "clearvoice" in available_backends()
             for b in available_backends():
-                variants = ([("polish-only", guard)] if b == "none"
-                            else [(f"{b}+guard", guard), (f"{b}_no-guard", None)])
-                for label, g in variants:
+                if b == "apple":
+                    continue  # still available with -b apple; left out of the A/B set
+                if b == "none":
+                    variants = [("polish-only", guard, False)]
+                else:
+                    variants = [(f"{b}+guard", guard, False), (f"{b}_no-guard", None, False)]
+                    if can_rebuild:
+                        variants.append((f"{b}+guard+rebuild", guard, True))
+                for label, g, rb in variants:
                     log(f"  {label}")
                     y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
-                                      verbose=args.verbose)
+                                      verbose=args.verbose, rebuild_hf=rb)
                     log(f"    {note}")
                     render(y, folder / f"{n}_{label}{fmt}", args)
                     n += 1
@@ -178,7 +198,7 @@ def main(argv: list[str] | None = None) -> None:
             folder = out_arg if out_arg else src.parent
             folder.mkdir(parents=True, exist_ok=True)
             dst = folder / f"{src.stem}_enhanced{fmt}"
-        y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
+        y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle, rebuild_hf=args.rebuild,
                            verbose=args.verbose)
         log(f"  {note}")
         render(y, dst, args)
