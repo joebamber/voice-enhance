@@ -1,6 +1,6 @@
 [project]
 name = "voice-enhance"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local, Adobe-Podcast-style speech enhancement: AI denoise + broadcast polish + loudness normalisation."
 readme = "README.md"
 requires-python = ">=3.10,<3.12"  # DeepFilterLib has no 3.12 wheels
@@ -16,6 +16,9 @@ dependencies = [
     # ClearerVoice-Studio: MossFormer2 48 kHz rebuild (default) and cleanup models.
     # Weights (~2 GB) download from Hugging Face on first use.
     "clearvoice>=0.1.2",
+    # Resemble Enhance (default engine). Its exact pins are relaxed via overrides.txt,
+    # so install with: uv tool install ... --overrides overrides.txt
+    "resemble-enhance==0.0.1",
 ]
 
 [project.optional-dependencies]

@@ -17,7 +17,7 @@ for tool in ffmpeg uv; do
 done
 
 echo "==> Installing voice-enhance (with ClearerVoice)"
-uv tool install --python 3.11 . --force --reinstall-package voice-enhance
+uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt
 export PATH="$HOME/.local/bin:$PATH"
 
 echo "==> Backends available:"

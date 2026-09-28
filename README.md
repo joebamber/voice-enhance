@@ -11,29 +11,29 @@ brew install ffmpeg uv
 
 ### In the root folder
 ```
-uv tool install --python 3.11 . --force --reinstall-package voice-enhance
+uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `voice-enhance ep.wav` | Repairs clipped peaks, cleans up noise, protects laughter, removes room reverb tails, rebuilds missing high frequencies (only if the recording is band-limited, e.g. phone or Zoom), and applies the warm tone. There's no compression or loudness normalisation: the output stays at the source level (turned down only if it would otherwise clip). Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
+| `voice-enhance ep.wav` | Runs Resemble Enhance, a generative AI model that removes noise and reverb and re-synthesises the voice as clean studio speech (the same approach as Adobe Podcast). It also repairs clipped peaks and protects laughter. There's no compression or loudness processing: the output stays at the source level. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
 | `--no-rebuild` | Skips the rebuild. |
 | `--rebuild-above 8000` | Forces the rebuild to regenerate everything above that frequency, even on full-band audio. |
-| `--dereverb 0.5` | Sets how hard to suppress reverb tails (default 1, 0 = off). |
+| `--dereverb 0.5` | Adds DSP reverb-tail suppression on top of the AI (default off). |
 | `--no-declip` | Doesn't repair clipped peaks. |
-| `voice-enhance ep.wav --compare` | Renders every option into `ep_compare/`, all at the source level, for A/B listening. |
+| `voice-enhance ep.wav --compare` | Renders every engine and setting into `ep_compare/`, all at the source level, for A/B listening. |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format (default: 24-bit WAV). |
 | `--lufs -16` | Opt-in loudness normalisation plus a true-peak limiter (off by default). |
 | `--true-peak -1` | Sets the limiter ceiling when `--lufs` is used (default -1.5 dBTP). |
-| `-b clearvoice` / `-b apple` / `-b none` | Picks the cleanup engine (default: DeepFilterNet). |
+| `-b resemble-denoise` / `-b deepfilter` / `-b clearvoice` / `-b none` | Picks a different engine: resemble-denoise (the AI cleanup without the re-synthesis), deepfilter (fast noise removal only), clearvoice, or none. |
 | `--laughter-guard 0.5` | Sets how much laughter to protect from the cleanup (0 = off, default 0.85). |
 | `-v` | Lists the timestamps where the laughter guard kicked in. |
-| `--warmth -8` | Sets the low end: lower is less boomy (default -4, 0 = Adobe's full low end). |
-| `--presence 8` | Sets clarity: lifts 3-8 kHz (default +5). |
-| `--tone neutral` | Turns off tone matching. |
+| `--warmth -8` (with `--tone warm`) | Sets the low end: lower is less boomy (default -4, 0 = Adobe's full low end). |
+| `--presence 8` (with `--tone warm`) | Sets clarity: lifts 3-8 kHz (default +5). |
+| `--tone warm` | Adds the Adobe-matched warm EQ (default: neutral, i.e. the AI's own tone). |
 | `--tone ref.wav` | Matches the tone of a recording you like. |
 | `--mix 0.9` | Leaves 10% of the original signal in. |
 | `--no-polish` | Cleanup and loudness only: no EQ, de-essing or compression. |

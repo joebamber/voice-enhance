@@ -349,7 +349,18 @@ def apple(audio: np.ndarray) -> np.ndarray:
     return _fit(y.mean(axis=1), audio.size)
 
 
+def _resemble(mode):
+    def f(a):
+        from . import resemble
+        if not resemble.available():
+            raise SystemExit("Resemble Enhance isn't installed; reinstall with the command in the README.")
+        return resemble.run(a, mode)
+    return f
+
+
 BACKENDS = {
+    "resemble": _resemble("enhance"),
+    "resemble-denoise": _resemble("denoise"),
     "deepfilter": lambda a: deepfilter(a),
     "clearvoice": lambda a: clearvoice(a),
     "apple": lambda a: apple(a),
@@ -358,7 +369,10 @@ BACKENDS = {
 
 
 def available_backends() -> list[str]:
+    from . import resemble
     names = ["none", "deepfilter"]
+    if resemble.available():
+        names += ["resemble", "resemble-denoise"]
     if apple_available():
         names.append("apple")
     if clearvoice_available():

@@ -20,9 +20,14 @@ _active: "Progress | None" = None
 
 
 class Progress:
-    def __init__(self, label: str, stages: list[str]):
+    def __init__(self, label: str, stages: list[str], backend: str | None = None):
         self.label = label
-        self.weights = {s: WEIGHTS[s] for s in stages}
+        w = dict(WEIGHTS)
+        if backend and backend.startswith("resemble"):
+            w.update(cleanup=80 if backend == "resemble" else 20, rebuild=5)
+        elif backend == "clearvoice":
+            w.update(cleanup=20)
+        self.weights = {s: w[s] for s in stages}
         self.total = float(sum(self.weights.values()))
         self.base = 0.0
         self.current: str | None = None
@@ -55,9 +60,9 @@ class Progress:
 
 
 @contextmanager
-def progress(label: str, stages: list[str]):
+def progress(label: str, stages: list[str], backend: str | None = None):
     global _active
-    p = Progress(label, stages)
+    p = Progress(label, stages, backend)
     prev, _active = _active, p
     try:
         yield p

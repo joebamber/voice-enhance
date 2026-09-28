@@ -89,11 +89,13 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     return cleaned, note
 
 
-def is_toned(args) -> bool:
-    return not (args.no_polish or args.tone == "neutral" or args.tone_amount == 0)
+def is_toned(args, tone: str | None = None) -> bool:
+    tone = tone or args.tone
+    return not (args.no_polish or tone == "neutral" or args.tone_amount == 0)
 
 
-def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool) -> list[str]:
+def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool,
+               tone: str | None = None) -> list[str]:
     st = ["decode"] if decode else []
     if args.declip:
         st.append("declip")
@@ -104,7 +106,7 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
         st.append("dereverb")
     if rebuild_hf:
         st.append("rebuild")
-    if is_toned(args):
+    if is_toned(args, tone):
         st.append("tone")
     return st + ["polish", "loudness"]
 
@@ -113,11 +115,12 @@ def short(name: str, n: int = 28) -> str:
     return name if len(name) <= n else name[: n - 1] + "…"
 
 
-def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
-    toned = is_toned(args)
+def render(audio: np.ndarray, dst: Path, args, ref_lufs: float, tone: str | None = None) -> str:
+    toned = is_toned(args, tone)
+    target = args._targets[tone or args.tone] if toned else None
     if toned:
         prog.stage("tone")
-        curve = correction(audio, args._target, args.tone_amount)
+        curve = correction(audio, target, args.tone_amount)
         audio = apply_eq(audio, curve)
     with tempfile.TemporaryDirectory() as td:
         a, b = Path(td) / "a.wav", Path(td) / "b.wav"
@@ -128,7 +131,7 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
             # Compression reacts to the extra low end and shifts the balance a
             # little, so measure the polished result and trim once more.
             polished = load(b)
-            trim = correction(polished, args._target, args.tone_amount)
+            trim = correction(polished, target, args.tone_amount)
             trim = [(f, max(-6.0, min(6.0, g))) for f, g in trim]
             save_wav(apply_eq(polished, trim), b)
             if args.verbose:
@@ -159,8 +162,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("inputs", nargs="*", help="audio/video files or folders")
     ap.add_argument("-o", "--output", help="output file (single input) or folder")
-    ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
-                    help="cleanup engine (default: deepfilter)")
+    ap.add_argument("-b", "--backend", default="resemble", choices=list(BACKENDS),
+                    help="engine: resemble (default, generative AI rebuild like Adobe), resemble-denoise, deepfilter, clearvoice, apple, none")
     ap.add_argument("--no-rebuild", dest="rebuild", action="store_false",
                     help="skip the rebuild step (regenerating missing high frequencies)")
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
@@ -168,8 +171,8 @@ def main(argv: list[str] | None = None) -> None:
                          "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
     ap.add_argument("--no-declip", dest="declip", action="store_false",
                     help="don't repair clipped (flat-topped) peaks before cleanup")
-    ap.add_argument("--dereverb", type=float, default=1.0, metavar="0-1",
-                    help="how hard to suppress room reverb tails after words (default 1.0, 0 = off)")
+    ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
+                    help="extra DSP tail suppression after the AI (default 0 = off; the AI handles reverb)")
     ap.add_argument("--compare", action="store_true",
                     help="render every backend with and without the laughter guard and the rebuild "
                          "into <name>_compare/ for A/B listening")
@@ -181,8 +184,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
     ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
                     help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
-    ap.add_argument("--tone", default="warm",
-                    help="tone target: 'warm' (Adobe-like, default), 'neutral' (no tonal shaping), "
+    ap.add_argument("--tone", default="neutral",
+                    help="tone target: 'neutral' (default: leave the AI's tone alone), 'warm' (Adobe-like EQ), "
                          "or a path to a reference recording whose sound you want to match")
     ap.add_argument("--tone-amount", type=float, default=1.0, metavar="0-1",
                     help="how far to move toward the tone target (default 1.0)")
@@ -226,7 +229,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.tone != "neutral":
         if args.tone not in PROFILES and not Path(args.tone).expanduser().exists():
             raise SystemExit(f"--tone must be warm, neutral, or an existing reference file (got {args.tone})")
-        args._target = with_presence(target_from(args.tone), args.presence, args.warmth)
+        args._targets = {args.tone: with_presence(target_from(args.tone), args.presence, args.warmth)}
+    else:
+        args._targets = {}
+    args._targets.setdefault("warm", with_presence(target_from("warm"), args.presence, args.warmth))
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
     files = gather(args.inputs)
@@ -254,27 +260,25 @@ def main(argv: list[str] | None = None) -> None:
                     loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
                 else:
                     level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
-            n = 1
-            can_rebuild = "clearvoice" in available_backends()
-            for b in available_backends():
-                if b == "apple":
-                    continue  # still available with -b apple; left out of the A/B set
-                if b == "none":
-                    variants = [("polish-only", guard, False)]
-                else:
-                    variants = [(f"{b}+guard", guard, False), (f"{b}_no-guard", None, False)]
-                    if can_rebuild:
-                        variants.append((f"{b}+guard+rebuild", guard, True))
-                for label, g, rb in variants:
-                    with prog.progress(short(f"{n}_{label}", 30), stages_for(args, b, g, rb, decode=False)):
-                        y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
-                                          verbose=args.verbose, rebuild_hf=rb, dry=args.dereverb, repair_clipping=args.declip,
-                                          rebuild_above=args.rebuild_above)
-                        result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
-                    log(f"  -> {result}")
-                    if args.verbose:
-                        log(f"    {note}")
-                    n += 1
+            avail = available_backends()
+            variants = []  # (label, backend, guard, tone)
+            if "resemble" in avail:
+                variants += [("resemble", "resemble", guard, "neutral"),
+                             ("resemble_no-guard", "resemble", None, "neutral"),
+                             ("resemble_warm", "resemble", guard, "warm"),
+                             ("resemble-denoise", "resemble-denoise", guard, "neutral")]
+            if "clearvoice" in avail:
+                variants.append(("clearvoice", "clearvoice", guard, "neutral"))
+            variants.append(("deepfilter_warm", "deepfilter", guard, "warm"))
+            for n, (label, b, g, tone) in enumerate(variants, start=1):
+                with prog.progress(short(f"{n}_{label}", 30),
+                                   stages_for(args, b, g, args.rebuild, decode=False, tone=tone), backend=b):
+                    y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
+                                      verbose=args.verbose, rebuild_hf=args.rebuild, dry=args.dereverb,
+                                      repair_clipping=args.declip, rebuild_above=args.rebuild_above)
+                    result = render(y, folder / f"{n}_{label}{fmt}", args, ref, tone=tone)
+                log(f"  -> {result}")
+                log(f"     {note}")
             log(f"  compare set in {folder}")
             continue
 
@@ -285,7 +289,8 @@ def main(argv: list[str] | None = None) -> None:
             folder.mkdir(parents=True, exist_ok=True)
             dst = folder / f"{src.stem}_enhanced{fmt}"
         log(f"\n{src.name}")
-        with prog.progress(short(src.stem), stages_for(args, args.backend, guard, args.rebuild, decode=True)):
+        with prog.progress(short(src.stem), stages_for(args, args.backend, guard, args.rebuild, decode=True),
+                           backend=args.backend):
             prog.stage("decode")
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
