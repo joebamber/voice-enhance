@@ -61,7 +61,7 @@ voice-enhance zoom-call.wav --rebuild
 
 - It rebuilds the *top* end (clarity, air, crisp consonants). It doesn't invent low end; the `warm` tone handles that.
 - It's generative, so listen for artefacts, especially on laughter and sibilance.
-- It's much slower than the cleanup. It uses the Apple Silicon GPU where it can and falls back to the CPU otherwise.
+- It's much slower than the cleanup. It uses the Apple Silicon GPU where it can. If the GPU path misbehaves, `VOICE_ENHANCE_DEVICE=cpu voice-enhance ...` forces the CPU.
 - It needs the optional extra: `uv tool install --python 3.11 '.[clearvoice]' --force`.
 
 To try everything at once:

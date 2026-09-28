@@ -120,6 +120,31 @@ def _in_dir(path: Path):
         os.chdir(old)
 
 
+class _OutputToCPU:
+    """Wraps ClearVoice's SR vocoder so its output comes back as float32 on the CPU.
+
+    ClearVoice's sliding-window SR decoder writes each segment into a float64
+    CPU tensor; with the model on Apple's GPU (MPS, no float64) that copy fails.
+    """
+
+    def __init__(self, module):
+        self._m = module
+
+    def __call__(self, *a, **k):
+        return self._m(*a, **k).float().cpu()
+
+    def __getattr__(self, name):
+        return getattr(self._m, name)
+
+
+def _force_cpu(cv) -> None:
+    import torch
+    for m in cv.models:
+        m.device = torch.device("cpu")
+        for sub in (m.model if isinstance(m.model, (list, tuple)) else [m.model]):
+            (sub._m if isinstance(sub, _OutputToCPU) else sub).to("cpu")
+
+
 @lru_cache(maxsize=2)
 def _cv(task: str, model: str):
     from clearvoice import ClearVoice
@@ -130,6 +155,11 @@ def _cv(task: str, model: str):
     # needs several GB of memory.
     for m in cv.models:
         m.args.one_time_decode_length = 4
+        if task == "speech_super_resolution" and isinstance(m.model, list) and len(m.model) == 2:
+            m.model[1] = _OutputToCPU(m.model[1])
+    # Escape hatch if Apple's GPU path misbehaves: VOICE_ENHANCE_DEVICE=cpu
+    if os.environ.get("VOICE_ENHANCE_DEVICE", "").lower() == "cpu":
+        _force_cpu(cv)
     return cv
 
 
