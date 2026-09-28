@@ -55,10 +55,14 @@ def target_from(ref: str) -> np.ndarray:
 _PRES_W = np.interp(np.log10(BANDS), np.log10([1600, 3000, 8000, 12500, 16000]), [0.0, 1.0, 1.0, 0.6, 0.3])
 
 
-def with_presence(target: np.ndarray, presence_db: float) -> np.ndarray:
-    """Lift (or drop) the 3-8 kHz region of a tone target. Keeps the warm low end
-    but gives back clarity that the Adobe-derived curve takes away."""
-    return target + presence_db * _PRES_W
+# Where warmth/boom lives: full weight up to 200 Hz, gone by 600 Hz.
+_WARM_W = np.interp(np.log10(BANDS), np.log10([200, 600]), [1.0, 0.0])
+
+
+def with_presence(target: np.ndarray, presence_db: float, warmth_db: float = 0.0) -> np.ndarray:
+    """Adjust a tone target: presence_db lifts 3-8 kHz (clarity), warmth_db
+    raises or lowers everything below ~400 Hz (body vs. boom)."""
+    return target + presence_db * _PRES_W + warmth_db * _WARM_W
 
 
 def correction(audio: np.ndarray, target: np.ndarray, amount: float = 1.0) -> list[tuple[int, float]]:

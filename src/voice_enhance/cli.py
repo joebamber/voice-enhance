@@ -125,6 +125,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="how far to move toward the tone target (default 1.0)")
     ap.add_argument("--presence", type=float, default=5.0, metavar="dB",
                     help="clarity: lift 3-8 kHz relative to the tone target (default +5; 0 = exactly the target)")
+    ap.add_argument("--warmth", type=float, default=-4.0, metavar="dB",
+                    help="low end relative to the tone target: lower = less boom (default -4; 0 = Adobe's full low end)")
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
     ap.add_argument("--list-backends", action="store_true", help="show which backends work on this machine")
@@ -147,7 +149,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.tone != "neutral":
         if args.tone not in PROFILES and not Path(args.tone).expanduser().exists():
             raise SystemExit(f"--tone must be warm, neutral, or an existing reference file (got {args.tone})")
-        args._target = with_presence(target_from(args.tone), args.presence)
+        args._target = with_presence(target_from(args.tone), args.presence, args.warmth)
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
     files = gather(args.inputs)
