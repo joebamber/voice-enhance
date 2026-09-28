@@ -169,6 +169,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
                     help="force the rebuild to regenerate everything above this frequency (default: detect where "
                          "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
+    ap.add_argument("--quality", type=int, default=64, metavar="STEPS",
+                    help="resemble: generation steps (default 64; 32 is ~2x faster, slightly rougher; up to 128)")
+    ap.add_argument("--temperature", type=float, default=0.5, metavar="0-1",
+                    help="resemble: prior temperature (default 0.5; lower = steadier, higher = more natural variation)")
+    ap.add_argument("--denoise-first", action="store_true",
+                    help="resemble: run its denoiser before re-synthesis (stronger cleanup; can sound more processed)")
     ap.add_argument("--no-declip", dest="declip", action="store_false",
                     help="don't repair clipped (flat-topped) peaks before cleanup")
     ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
@@ -184,8 +190,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
     ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
                     help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
-    ap.add_argument("--tone", default="neutral",
-                    help="tone target: 'neutral' (default: leave the AI's tone alone), 'warm' (Adobe-like EQ), "
+    ap.add_argument("--tone", default="warm",
+                    help="tone target: 'warm' (default: EQ toward Adobe's measured tone, adds the body a thin mic lacks), 'neutral', "
                          "or a path to a reference recording whose sound you want to match")
     ap.add_argument("--tone-amount", type=float, default=1.0, metavar="0-1",
                     help="how far to move toward the tone target (default 1.0)")
@@ -233,6 +239,11 @@ def main(argv: list[str] | None = None) -> None:
     else:
         args._targets = {}
     args._targets.setdefault("warm", with_presence(target_from("warm"), args.presence, args.warmth))
+    from . import resemble
+    if not 1 <= args.quality <= 128 or not 0 <= args.temperature <= 1:
+        raise SystemExit("--quality must be 1-128 and --temperature 0-1")
+    resemble.SETTINGS.update(nfe=args.quality, temperature=args.temperature,
+                             denoise_first=0.9 if args.denoise_first else 0.1)
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
     files = gather(args.inputs)
@@ -263,12 +274,11 @@ def main(argv: list[str] | None = None) -> None:
             avail = available_backends()
             variants = []  # (label, backend, guard, tone)
             if "resemble" in avail:
-                variants += [("resemble", "resemble", guard, "neutral"),
-                             ("resemble_no-guard", "resemble", None, "neutral"),
-                             ("resemble_warm", "resemble", guard, "warm"),
-                             ("resemble-denoise", "resemble-denoise", guard, "neutral")]
+                variants += [("resemble_warm", "resemble", guard, "warm"),
+                             ("resemble_neutral", "resemble", guard, "neutral"),
+                             ("resemble_no-guard", "resemble", None, "warm")]
             if "clearvoice" in avail:
-                variants.append(("clearvoice", "clearvoice", guard, "neutral"))
+                pass  # measured: no better than deepfilter on reverb; left out to keep --compare quick
             variants.append(("deepfilter_warm", "deepfilter", guard, "warm"))
             for n, (label, b, g, tone) in enumerate(variants, start=1):
                 with prog.progress(short(f"{n}_{label}", 30),

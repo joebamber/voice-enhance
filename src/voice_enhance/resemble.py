@@ -74,10 +74,38 @@ def device():
 
 
 def _run_dir() -> Path:
-    from huggingface_hub import snapshot_download
     local = CACHE / "resemble-enhance"
+    run_dir = local / "enhancer_stage2"
+    ckpt = run_dir / "ds" / "G" / "default" / "mp_rank_00_model_states.pt"
+    if ckpt.exists() and (run_dir / "hparams.yaml").exists():
+        return run_dir  # already downloaded: works offline, no Hub round-trip
+    from huggingface_hub import snapshot_download
     snapshot_download(repo_id=REPO, local_dir=str(local), allow_patterns=["enhancer_stage2/*"])
-    return local / "enhancer_stage2"
+    return run_dir
+
+
+@lru_cache(maxsize=2)
+def _load_denoiser(force_cpu: bool = False):
+    """Just the denoiser (~11 M parameters) out of the enhancer checkpoint:
+    fast, light, and not generative (so it can't sound robotic)."""
+    import torch
+    _stub_deepspeed()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from resemble_enhance.denoiser.denoiser import Denoiser
+        from resemble_enhance.denoiser.hparams import HParams as DHParams
+    run_dir = _run_dir()
+    # mmap: only the denoiser's tensors are actually read from the 700 MB checkpoint
+    state = torch.load(run_dir / "ds" / "G" / "default" / "mp_rank_00_model_states.pt", map_location="cpu",
+                       mmap=True, weights_only=False)["module"]
+    sub = {k[len("denoiser."):]: v.clone() for k, v in state.items() if k.startswith("denoiser.")}
+    del state
+    model = Denoiser(DHParams())
+    model.load_state_dict(sub)
+    model.eval()
+    dev = torch.device("cpu") if force_cpu else device()
+    model.to(dev)
+    return model, dev
 
 
 def _vocoder_on_cpu(model, dev, force: bool = False):
@@ -145,9 +173,17 @@ def _progress_trange():
     ri.trange = trange
 
 
-def run(audio: np.ndarray, mode: str = "enhance", nfe: int = 64, denoise_first: float = 0.9,
-        temperature: float = 0.5) -> np.ndarray:
+# Settings used for mode "enhance"; the CLI overwrites these from its flags.
+# Defaults match Resemble's own demo (denoise-before-enhance off -> 0.1).
+SETTINGS = {"nfe": 64, "temperature": 0.5, "denoise_first": 0.1}
+
+
+def run(audio: np.ndarray, mode: str = "enhance", nfe: int | None = None, denoise_first: float | None = None,
+        temperature: float | None = None) -> np.ndarray:
     """mode 'enhance' (denoise + generative rebuild) or 'denoise' (cleanup only)."""
+    nfe = nfe or SETTINGS["nfe"]
+    denoise_first = SETTINGS["denoise_first"] if denoise_first is None else denoise_first
+    temperature = SETTINGS["temperature"] if temperature is None else temperature
     import torch
     import torchaudio.functional as AF
     from resemble_enhance.inference import inference
@@ -165,14 +201,20 @@ def _run(audio, mode, nfe, denoise_first, temperature, force_cpu):
     import torch
     import torchaudio.functional as AF
     from resemble_enhance.inference import inference
-    model, dev = _load(force_cpu)
+    if mode == "denoise":
+        model, dev = _load_denoiser(force_cpu)
+    else:
+        model, dev = _load(force_cpu)
     _progress_trange()
     x = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
     x = AF.resample(x, SR, MODEL_SR)
     with torch.inference_mode(), warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if mode == "denoise":
-            y, sr = inference(model=model.denoiser, dwav=x, sr=MODEL_SR, device=dev)
+            # mask-based, so short chunks are harmless and keep memory down
+            chunk = float(os.environ.get("VOICE_ENHANCE_CHUNK_S", "10"))
+            y, sr = inference(model=model, dwav=x, sr=MODEL_SR, device=dev,
+                              chunk_seconds=chunk, overlap_seconds=min(1.0, chunk / 5))
         else:
             model.configurate_(nfe=nfe, solver="midpoint", lambd=denoise_first, tau=temperature)
             y, sr = inference(model=model, dwav=x, sr=MODEL_SR, device=dev)
