@@ -141,7 +141,7 @@ def _force_cpu(cv) -> None:
     import torch
     for m in cv.models:
         m.device = torch.device("cpu")
-        for sub in (m.model if isinstance(m.model, (list, tuple)) else [m.model]):
+        for sub in (list(m.model) if isinstance(m.model, (list, tuple, torch.nn.ModuleList)) else [m.model]):
             (sub._m if isinstance(sub, _OutputToCPU) else sub).to("cpu")
 
 
@@ -155,8 +155,13 @@ def _cv(task: str, model: str):
     # needs several GB of memory.
     for m in cv.models:
         m.args.one_time_decode_length = 4
-        if task == "speech_super_resolution" and isinstance(m.model, list) and len(m.model) == 2:
-            m.model[1] = _OutputToCPU(m.model[1])
+        if task == "speech_super_resolution":
+            # m.model is an nn.ModuleList [mossformer, vocoder], which won't hold a
+            # plain wrapper, so swap in an ordinary list (decode only indexes it).
+            parts = list(m.model)
+            if len(parts) != 2:
+                raise RuntimeError(f"Unexpected ClearVoice SR model layout ({len(parts)} parts)")
+            m.model = [parts[0], _OutputToCPU(parts[1])]
     # Escape hatch if Apple's GPU path misbehaves: VOICE_ENHANCE_DEVICE=cpu
     if os.environ.get("VOICE_ENHANCE_DEVICE", "").lower() == "cpu":
         _force_cpu(cv)
