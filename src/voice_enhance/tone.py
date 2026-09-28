@@ -115,15 +115,39 @@ LOW_SPLIT_HZ = 300
 
 def apply_eq_voice_only_lows(audio: np.ndarray, curve: list[tuple[int, float]],
                              pause_highpass_hz: float = 120.0) -> np.ndarray:
+    # (also: no boost and a high-pass below the speakers' lowest pitch; see voice_floor_hz)
     """The warm curve's low-end boost is for the *voice*. Applied statically it
     also lifts room rumble, bumps and plosive thumps in the pauses (measured
     +15 dB). So: full curve while someone is speaking; in pauses the same curve
     with no boost below ~300 Hz and a gentle high-pass, crossfaded smoothly."""
     from scipy.signal import butter, sosfiltfilt
+    floor = voice_floor_hz(audio)
+    curve = below_voice(curve, floor)
     warm = apply_eq(audio, curve)
+    # during speech too: remove what's below the voice (Adobe's output is silent there)
+    sub = butter(4, 0.8 * floor, "high", fs=SR, output="sos")
+    warm = sosfiltfilt(sub, warm).astype(np.float32)
     flat_curve = [(f, min(g, 0.0) if f < LOW_SPLIT_HZ else g) for f, g in curve]
     flat = apply_eq(audio, flat_curve)
     sos = butter(4, pause_highpass_hz, "high", fs=SR, output="sos")
     flat = sosfiltfilt(sos, flat).astype(np.float32)
     w = voice_weight(audio)
     return (w * warm + (1 - w) * flat).astype(np.float32)
+
+
+def voice_floor_hz(audio: np.ndarray) -> float:
+    """Lowest fundamental the speakers actually use (5th percentile of pitch on
+    voiced frames). Nothing below this is voice -- it's rumble, handling noise
+    and room boom -- so it should never be boosted, and can be removed."""
+    import librosa
+    y = librosa.resample(audio.astype(np.float32), orig_sr=SR, target_sr=16000)
+    f0, voiced, _ = librosa.pyin(y, fmin=55, fmax=400, sr=16000, frame_length=1024, hop_length=320)
+    f0 = f0[voiced & np.isfinite(f0)] if f0 is not None else np.array([])
+    if f0.size < 50:
+        return 80.0
+    return float(np.clip(np.percentile(f0, 5), 60.0, 200.0))
+
+
+def below_voice(curve: list[tuple[int, float]], floor_hz: float) -> list[tuple[int, float]]:
+    """No boost below the voice's lowest fundamental (cuts are kept)."""
+    return [(f, min(g, 0.0) if f < 0.9 * floor_hz else g) for f, g in curve]
