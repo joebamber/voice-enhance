@@ -32,9 +32,12 @@ def _fit(x: np.ndarray, n: int) -> np.ndarray:
 def chunked(fn, audio: np.ndarray, chunk_s: float = 60.0, overlap_s: float = 1.0) -> np.ndarray:
     """Run fn over long audio in overlapping chunks, joined with linear crossfades.
     Keeps memory flat for hour-long recordings."""
+    from . import progress
     chunk, ov = int(chunk_s * SR), int(overlap_s * SR)
     if audio.size <= chunk:
-        return _fit(fn(audio), audio.size)
+        y = _fit(fn(audio), audio.size)
+        progress.fraction(1.0)
+        return y
     hop = chunk - ov
     out = np.zeros(audio.size, dtype=np.float32)
     fade_in = np.linspace(0.0, 1.0, ov, dtype=np.float32)
@@ -47,6 +50,7 @@ def chunked(fn, audio: np.ndarray, chunk_s: float = 60.0, overlap_s: float = 1.0
             y[:k] *= fade_in[:k]
             out[start:start + k] *= 1.0 - fade_in[:k]
         out[start:start + y.size] += y
+        progress.fraction(min(1.0, (start + seg.size) / audio.size))
         if start + chunk >= audio.size:
             break
         start += hop
@@ -120,6 +124,17 @@ def _in_dir(path: Path):
         os.chdir(old)
 
 
+@contextmanager
+def _silence():
+    """Hide ClearVoice's per-call 'Running ...' line and its own tqdm bar
+    (ours shows progress instead)."""
+    import io
+    from contextlib import redirect_stderr, redirect_stdout
+    sink = io.StringIO()
+    with redirect_stdout(sink), redirect_stderr(sink):
+        yield
+
+
 class _OutputToCPU:
     """Wraps ClearVoice's SR vocoder so its output comes back as float32 on the CPU.
 
@@ -148,6 +163,10 @@ def _force_cpu(cv) -> None:
 @lru_cache(maxsize=2)
 def _cv(task: str, model: str):
     from clearvoice import ClearVoice
+    import clearvoice.networks as cvn
+    # ClearVoice wraps every call in its own tqdm bar; a second bar alongside ours
+    # misbehaves on a real terminal, so make its loop a plain iterator.
+    cvn.tqdm = lambda it, *a, **k: it
     with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings():
         warnings.simplefilter("ignore")
         cv = ClearVoice(task=task, model_names=[model])
@@ -175,15 +194,16 @@ def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "in.wav"
             save_wav(seg, p)
-            with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings():
+            with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings(), _silence():
                 warnings.simplefilter("ignore")
                 y = cv(input_path=str(p), online_write=False)
         if isinstance(y, dict):
             y = next(iter(y.values()))
         return np.asarray(y, dtype=np.float32).reshape(-1)
 
-    # 30 s pieces keep memory modest on the GPU/Neural path; crossfaded back together
-    return chunked(run, audio, chunk_s=30.0)
+    # 10 s pieces keep memory modest and let the progress bar move every few
+    # seconds; ClearVoice windows internally anyway, and pieces are crossfaded.
+    return chunked(run, audio, chunk_s=10.0, overlap_s=0.5)
 
 
 def _need_clearvoice() -> None:

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
+from . import progress as prog
 from .audio import SR, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
 from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
 from .guard import GuardSettings, apply_guard
@@ -24,7 +25,7 @@ GENTLE_DB = 8.0  # attenuation cap for the gentle pass the laughter guard falls 
 
 
 def log(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    prog.write(msg)
 
 
 def gather(inputs: list[str]) -> list[Path]:
@@ -50,35 +51,60 @@ def ts(sec: float) -> str:
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
             gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False) -> tuple[np.ndarray, str]:
     t = time.time()
+    prog.stage("cleanup")
     cleaned = BACKENDS[backend](audio)
     note = f"{backend} {time.time() - t:.1f}s"
     if backend != "none" and guard and guard.strength > 0:
+        prog.stage("guard")
         if "g" not in gentle_cache:
             gentle_cache["g"] = deepfilter(audio, atten_lim_db=GENTLE_DB)
         cleaned, _, regions = apply_guard(audio, cleaned, gentle_cache["g"], guard)
         secs = sum(b - a for a, b in regions)
         note += f", laughter guard protected {len(regions)} moments ({secs:.1f}s)"
         if verbose and regions:
-            note += "\n      at " + ", ".join(f"{ts(a)} ({b - a:.1f}s)" for a, b in regions)
+            note += "\n    at " + ", ".join(f"{ts(a)} ({b - a:.1f}s)" for a, b in regions)
     if mix < 1.0:
         cleaned = mix * cleaned + (1 - mix) * audio
     if rebuild_hf:
         # after the guard, so laughs get rebuilt too instead of flipping between
         # a rebuilt and an un-rebuilt version
         t = time.time()
+        prog.stage("rebuild")
         cleaned = rebuild(cleaned)
         note += f", rebuild {time.time() - t:.1f}s"
     return cleaned, note
 
 
-def render(audio: np.ndarray, dst: Path, args) -> None:
-    toned = not (args.no_polish or args.tone == "neutral" or args.tone_amount == 0)
+def is_toned(args) -> bool:
+    return not (args.no_polish or args.tone == "neutral" or args.tone_amount == 0)
+
+
+def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool) -> list[str]:
+    st = ["decode"] if decode else []
+    st.append("cleanup")
+    if backend != "none" and guard and guard.strength > 0:
+        st.append("guard")
+    if rebuild_hf:
+        st.append("rebuild")
+    if is_toned(args):
+        st.append("tone")
+    return st + ["polish", "loudness"]
+
+
+def short(name: str, n: int = 28) -> str:
+    return name if len(name) <= n else name[: n - 1] + "…"
+
+
+def render(audio: np.ndarray, dst: Path, args) -> str:
+    toned = is_toned(args)
     if toned:
+        prog.stage("tone")
         curve = correction(audio, args._target, args.tone_amount)
         audio = apply_eq(audio, curve)
     with tempfile.TemporaryDirectory() as td:
         a, b = Path(td) / "a.wav", Path(td) / "b.wav"
         save_wav(audio, a)
+        prog.stage("polish")
         polish_stage(a, b, polish=not args.no_polish, toned=toned)
         if toned:
             # Compression reacts to the extra low end and shifts the balance a
@@ -92,9 +118,10 @@ def render(audio: np.ndarray, dst: Path, args) -> None:
                 for f, g in trim:
                     total[f] += g
                 log("    tone: " + " ".join(f"{f}:{g:+.0f}" for f, g in total.items() if abs(g) >= 1))
+        prog.stage("loudness")
         loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
     m = measure(dst)
-    log(f"    -> {dst.name}  ({m['lufs']:.1f} LUFS, peak {m['true_peak']:.1f} dBTP)")
+    return f"{dst.name}  ({m['lufs']:.1f} LUFS, peak {m['true_peak']:.1f} dBTP)"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -133,6 +160,16 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     # Apple Silicon GPU: let any op PyTorch hasn't implemented on MPS fall back to CPU
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    # ClearVoice reads audio through pydub, which runs ffmpeg without -nostdin.
+    # With a terminal on stdin, ffmpeg can swallow keypresses or get suspended,
+    # hanging the run. We never read stdin, so point it at /dev/null.
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            null = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(null, 0)
+            os.close(null)
+    except OSError:
+        pass
 
     if args.list_backends:
         print("\n".join(available_backends()))
@@ -161,12 +198,12 @@ def main(argv: list[str] | None = None) -> None:
     single_file_out = out_arg is not None and out_arg.suffix and len(files) == 1 and not args.compare
 
     for src in files:
-        log(f"\n{src.name}")
-        audio = load(src)
-        log(f"  {audio.size / SR:.1f}s of audio")
         gentle: dict = {}
+        started = time.time()
 
         if args.compare:
+            log(f"\n{src.name}")
+            audio = load(src)
             base = out_arg if out_arg else src.parent
             folder = base / f"{src.stem}_compare"
             folder.mkdir(parents=True, exist_ok=True)
@@ -188,11 +225,13 @@ def main(argv: list[str] | None = None) -> None:
                     if can_rebuild:
                         variants.append((f"{b}+guard+rebuild", guard, True))
                 for label, g, rb in variants:
-                    log(f"  {label}")
-                    y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
-                                      verbose=args.verbose, rebuild_hf=rb)
-                    log(f"    {note}")
-                    render(y, folder / f"{n}_{label}{fmt}", args)
+                    with prog.progress(short(f"{n}_{label}", 30), stages_for(args, b, g, rb, decode=False)):
+                        y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
+                                          verbose=args.verbose, rebuild_hf=rb)
+                        result = render(y, folder / f"{n}_{label}{fmt}", args)
+                    log(f"  -> {result}")
+                    if args.verbose:
+                        log(f"    {note}")
                     n += 1
             log(f"  compare set in {folder}")
             continue
@@ -203,10 +242,17 @@ def main(argv: list[str] | None = None) -> None:
             folder = out_arg if out_arg else src.parent
             folder.mkdir(parents=True, exist_ok=True)
             dst = folder / f"{src.stem}_enhanced{fmt}"
-        y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle, rebuild_hf=args.rebuild,
-                           verbose=args.verbose)
-        log(f"  {note}")
-        render(y, dst, args)
+        log(f"\n{src.name}")
+        with prog.progress(short(src.stem), stages_for(args, args.backend, guard, args.rebuild, decode=True)):
+            prog.stage("decode")
+            audio = load(src)
+            y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
+                              rebuild_hf=args.rebuild, verbose=args.verbose)
+            result = render(y, dst, args)
+        mins, secs = divmod(time.time() - started, 60)
+        log(f"  -> {result}  [{audio.size / SR / 60:.1f} min audio in {int(mins)}m{int(secs):02d}s]")
+        if args.verbose:
+            log(f"  {note}")
 
 
 if __name__ == "__main__":
