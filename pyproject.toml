@@ -1,6 +1,6 @@
 [project]
 name = "voice-enhance"
-version = "0.1.2"
+version = "0.2.0"
 description = "Local, Adobe-Podcast-style speech enhancement: AI denoise + broadcast polish + loudness normalisation."
 readme = "README.md"
 requires-python = ">=3.10,<3.12"  # DeepFilterLib has no 3.12 wheels
@@ -12,11 +12,14 @@ dependencies = [
     "numpy>=1.24,<2",
     "soundfile>=0.12",
     "scipy>=1.10",
+    # ClearerVoice-Studio: MossFormer2 48 kHz rebuild (default) and cleanup models.
+    # Weights (~2 GB) download from Hugging Face on first use.
+    "clearvoice>=0.1.2",
 ]
 
 [project.optional-dependencies]
-# ClearerVoice-Studio (MossFormer2 48 kHz enhancement + super-resolution). Weights download from Hugging Face on first use.
-clearvoice = ["clearvoice>=0.1.2"]
+# kept so older install commands with [clearvoice] still work
+clearvoice = []
 
 [project.scripts]
 voice-enhance = "voice_enhance.cli:main"

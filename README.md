@@ -11,15 +11,15 @@ brew install ffmpeg uv
 
 ### In the root folder
 ```
-uv tool install --python 3.11 '.[clearvoice]' --force --reinstall-package voice-enhance
+uv tool install --python 3.11 . --force --reinstall-package voice-enhance
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `voice-enhance ep.wav` | Clean up, warm tone, polish and normalise to -16 LUFS. Writes `ep_enhanced.wav` next to the input. |
-| `voice-enhance ep.wav --rebuild` | Also regenerates missing high frequencies (for phone, Zoom or laptop audio). |
+| `voice-enhance ep.wav` | Cleans up, rebuilds missing high frequencies, applies the warm tone, polishes and normalises to -16 LUFS. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. |
+| `--no-rebuild` | Skips the rebuild: cleanup only, much faster. |
 | `voice-enhance ep.wav --compare` | Renders every option into `ep_compare/`, all at the same loudness, for A/B listening. |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format (default: 24-bit WAV). |

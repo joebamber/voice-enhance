@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot: install voice-enhance with the ClearerVoice models and render A/B
+# One-shot: install voice-enhance and render A/B
 # sets for the laugh clip plus two deliberately thin versions of it.
 #
 #   ./scripts/try-rebuild.sh
@@ -17,7 +17,7 @@ for tool in ffmpeg uv; do
 done
 
 echo "==> Installing voice-enhance (with ClearerVoice)"
-uv tool install --python 3.11 '.[clearvoice]' --force --reinstall-package voice-enhance
+uv tool install --python 3.11 . --force --reinstall-package voice-enhance
 export PATH="$HOME/.local/bin:$PATH"
 
 echo "==> Backends available:"

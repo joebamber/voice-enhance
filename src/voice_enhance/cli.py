@@ -13,7 +13,7 @@ import numpy as np
 
 from . import __version__
 from .audio import SR, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
-from .backends import BACKENDS, available_backends, deepfilter, rebuild
+from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
 from .guard import GuardSettings, apply_guard
 from .tone import PROFILES, apply_eq, correction, target_from, with_presence
 
@@ -106,11 +106,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-o", "--output", help="output file (single input) or folder")
     ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
                     help="cleanup engine (default: deepfilter)")
-    ap.add_argument("--rebuild", action="store_true",
-                    help="regenerate missing high frequencies on thin recordings (phone, laptop, Zoom, low-bitrate MP3); "
-                         "needs the clearvoice extra")
+    ap.add_argument("--no-rebuild", dest="rebuild", action="store_false",
+                    help="skip the rebuild step (regenerating missing high frequencies); cleanup only, much faster")
     ap.add_argument("--compare", action="store_true",
-                    help="render every available backend (guard on/off, and with --rebuild if installed) "
+                    help="render every backend with and without the laughter guard and the rebuild "
                          "into <name>_compare/ for A/B listening")
     ap.add_argument("-f", "--format", default="wav", help="output format: wav, flac, m4a, mp3, aiff (default wav)")
     ap.add_argument("--lufs", type=float, default=-16.0, help="target loudness (default -16; use -19 for mono spec)")
@@ -142,6 +141,10 @@ def main(argv: list[str] | None = None) -> None:
     if not args.inputs:
         ap.error("give at least one audio file or folder")
     require_ffmpeg()
+    if args.rebuild and not clearvoice_available():
+        raise SystemExit("The rebuild step needs ClearerVoice. Reinstall with:\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance\n"
+                         "or run with --no-rebuild")
     if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1:
         raise SystemExit("--mix and --laughter-guard must be between 0 and 1")
     if not 0 <= args.tone_amount <= 1:

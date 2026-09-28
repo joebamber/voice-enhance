@@ -189,7 +189,8 @@ def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
 def _need_clearvoice() -> None:
     if not clearvoice_available():
         raise SystemExit("ClearerVoice isn't installed. Reinstall with:\n"
-                         "  uv tool install --python 3.11 '.[clearvoice]' --force")
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance\n"
+                         "or skip the rebuild with --no-rebuild")
 
 
 def clearvoice(audio: np.ndarray) -> np.ndarray:
