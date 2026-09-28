@@ -1,0 +1,28 @@
+[project]
+name = "voice-enhance"
+version = "0.1.0"
+description = "Local, Adobe-Podcast-style speech enhancement: AI denoise + broadcast polish + loudness normalisation."
+readme = "README.md"
+requires-python = ">=3.10,<3.12"  # DeepFilterLib has no 3.12 wheels
+dependencies = [
+    "deepfilternet==0.5.6",
+    # deepfilternet 0.5.6 imports torchaudio.backend, removed in later torchaudio releases
+    "torch>=2.1,<2.6",
+    "torchaudio>=2.1,<2.6",
+    "numpy>=1.24,<2",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# ClearerVoice-Studio (MossFormer2 48 kHz enhancement + super-resolution). Weights download from Hugging Face on first use.
+clearvoice = ["clearvoice>=0.1.2"]
+
+[project.scripts]
+voice-enhance = "voice_enhance.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_enhance"]
