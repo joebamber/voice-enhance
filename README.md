@@ -18,7 +18,7 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 
 | Command | What it does | Default |
 |---|---|---|
-| `voice-enhance ep.wav` | Repairs clipped peaks, removes noise with DeepFilterNet (natural-sounding AI cleanup), protects laughter, rebuilds missing high frequencies if the recording is band-limited (e.g. phone or Zoom), and applies a warm EQ matched to Adobe's measured tone. There's no compression or loudness processing: the output stays at the source level. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. | |
+| `voice-enhance ep.wav` | Repairs clipped peaks, removes noise with DeepFilterNet (natural-sounding AI cleanup), protects laughter, rebuilds missing high frequencies if the recording is band-limited below 12 kHz (e.g. phone or Zoom), and silences anything far quieter than the speaker. The recording keeps its own tone (no EQ). There's no compression or loudness processing: the output stays at the source level. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. | |
 | `--no-rebuild` | Skips the rebuild. | Rebuild on |
 | `--rebuild-above 8000` | Forces the rebuild to regenerate everything above that frequency, even on full-band audio. | Auto-detected |
 | `--dereverb 0.5` | Adds DSP reverb-tail suppression on top of the AI. | 0 (off) |
@@ -26,8 +26,9 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 | `--temperature 0.3` | With `-b resemble`: sets Resemble's variation. Lower is steadier; higher sounds more natural but less consistent. | 0.5 |
 | `--denoise-first` | With `-b resemble`: makes Resemble run its denoiser before re-synthesis: stronger cleanup, but can sound more processed. | Off |
 | `--no-declip` | Doesn't repair clipped peaks. | Declip on |
-| `--protect 0` | Sets speech protection (0 turns it off). Speech this far above the room noise comes from the original, so the AI can't duck loud syllables. Higher values let the AI process more. | 22 dB |
+| `--protect 22` | Turns on speech protection: speech this far above the room noise comes from the original, noise and all, so the AI can't duck loud syllables. Use it if loud words dip in level. Higher values let the AI process more. | 0 (off) |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. | No cap |
+| `--gate 40` | Sets the background gate: anything this many dB below the main speaker is silenced, e.g. faint voices in the background, which the AI keeps because they're speech. Higher keeps quieter sounds; 0 turns it off. | 30 dB |
 | `voice-enhance ep.wav --compare` | Renders every engine and setting into `ep_compare/`, all at the source level, for A/B listening. | |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. | Next to the input |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format. | 24-bit WAV |
@@ -38,8 +39,8 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 | `-v` | Lists the timestamps where the laughter guard kicked in. | Off |
 | `--warmth -8` (with `--tone warm`) | Sets the low end: lower is less boomy (0 = Adobe's full low end). | -4 dB |
 | `--presence 8` (with `--tone warm`) | Sets clarity: lifts 3-8 kHz. | +5 dB |
-| `--tone neutral` | Skips the warm EQ and keeps the AI's own tone. | `warm` |
-| `--tone ref.wav` | Matches the tone of a recording you like. | `warm` |
+| `--tone warm` | EQs toward Adobe's measured tone: adds body to a thin mic, but on a mic that's already good it lifts room boom and hiss (up to +20 dB of treble). | `neutral` |
+| `--tone ref.wav` | Matches the tone of a recording you like. | `neutral` |
 | `--mix 0.9` | Leaves 10% of the original signal in. | 1.0 |
 | `--no-polish` | Cleanup and loudness only: no EQ, de-essing or compression. | Polish on |
 | `--list-backends` | Shows which cleanup engines are installed. | |
@@ -48,13 +49,14 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 
 ## Tuning the background noise
 
-By default DeepFilterNet removes as much noise as it can, down to near silence in the pauses. These dial it up or down:
+By default DeepFilterNet removes as much noise as it can, and the background gate then silences whatever is left more than 30 dB below the speaker (faint background voices, which the AI keeps because they're speech). The pauses end up silent. These dial it up or down:
 
 | To get… | Use | How it works |
 |---|---|---|
-| **Less** noise removal, natural room tone in the pauses | `--max-reduction 12` | Caps how far any sound is pushed down, in dB. Lower values leave more room tone. Also avoids watery or warbly artefacts on hard material. |
+| **Less** noise removal, natural room tone in the pauses | `--max-reduction 12 --gate 0` | Caps how far any sound is pushed down, in dB. Lower values leave more room tone. Also avoids watery or warbly artefacts on hard material. Without `--gate 0` the gate silences that room tone again. |
+| Keep quiet sounds far below the speaker (distant voices, soft breaths) | `--gate 40` (or `--gate 0`) | The gate silences anything more than this many dB below the main speaker. Raise it to keep quieter sounds; 0 turns it off. |
 | **Less** noise removal, everywhere | `--mix 0.8` | Blends 20% of the original (noise included) back in. Lower values bring back more of the noise. |
-| **More** noise removal under loud speech | `--protect 30` (or `--protect 0`) | Speech more than this many dB above the room noise comes from the original, noise and all, because there the voice masks it. Raising it hands more of the speech to the AI; 0 hands it all over, but the AI may then duck loud syllables. Lower (e.g. `--protect 15`) keeps more of the original voice. |
+| Loud words dipping in level | `--protect 22` | Off by default, so the AI cleans all of the speech. If it ducks loud syllables, this takes speech more than 22 dB above the room noise from the original instead, noise and all (there the voice mostly masks it). Lower (e.g. `--protect 15`) keeps more of the original voice. |
 | **More** room echo removed | `--dereverb 0.5` | Adds DSP reverb-tail suppression after the AI (0–1). |
 | **Much more** cleanup (echo and noise) | `-b resemble --denoise-first` | Generative re-synthesis. Strongest, but slow and can sound robotic. |
 | No noise removal at all | `-b none` | Keeps declip, rebuild and EQ only. |
@@ -64,6 +66,6 @@ The laughter guard (`--laughter-guard`) also lets a little noise through around 
 `--compare` only compares engines, so to hear these settings side by side, render a few variants of a short clip:
 
 ```
-voice-enhance clip.wav -o clip_mr12.wav --max-reduction 12
+voice-enhance clip.wav -o clip_mr12.wav --max-reduction 12 --gate 0
 voice-enhance clip.wav -o clip_mix80.wav --mix 0.8
 ```

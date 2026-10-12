@@ -84,9 +84,28 @@ def _df():
     return model, state
 
 
+# DeepFilterNet's result depends on input level: on a quiet recording it
+# leaves the background almost untouched (3-5 dB off) or, on a very quiet one,
+# ducks the speech itself by 30 dB. Fed speech at this level it took 14-24 dB
+# off the background on every test clip, with speech within 1 dB. Gains level
+# off above -18.
+DF_WORK_DB = -16.0
+
+
+def speech_level_db(audio: np.ndarray) -> float:
+    """Mean power of the louder 40% of 100 ms frames, dB re full scale."""
+    f0 = SR // 10
+    n = audio.size // f0
+    if n < 5:
+        return 20 * np.log10(np.sqrt((audio.astype(np.float64) ** 2).mean()) + 1e-9)
+    lv = (audio[: n * f0].reshape(n, f0).astype(np.float64) ** 2).mean(1)
+    return float(10 * np.log10(lv[lv >= np.percentile(lv, 60)].mean() + 1e-12))
+
+
 def deepfilter(audio: np.ndarray, atten_lim_db: float | None = None) -> np.ndarray:
     """DeepFilterNet3. atten_lim_db caps how far any sound can be pushed down
-    (None = unlimited). A low cap is a 'gentle' pass."""
+    (None = unlimited). A low cap is a 'gentle' pass. Runs at a fixed working
+    level (DF_WORK_DB) and hands back audio at the input's level."""
     import torch
 
     model, state = _df()  # load first so its import noise is silenced
@@ -99,7 +118,8 @@ def deepfilter(audio: np.ndarray, atten_lim_db: float | None = None) -> np.ndarr
                         atten_lim_db=atten_lim_db)
         return y.squeeze(0).numpy()
 
-    return chunked(run, audio)
+    gain = 10 ** ((DF_WORK_DB - speech_level_db(audio)) / 20)
+    return (chunked(run, (audio * gain).astype(np.float32)) / gain).astype(np.float32)
 
 
 # --- ClearerVoice-Studio (optional extra) ---------------------------------------
@@ -293,6 +313,9 @@ def _install_band_fix() -> None:
     dec.bandwidth_sub = fixed_bandwidth_sub
 
 
+REBUILD_MAX_HZ = 12000.0  # recordings that reach this high aren't rebuilt
+
+
 def rebuild(audio: np.ndarray, above_hz: float | None = None) -> tuple[np.ndarray, str]:
     """MossFormer2 48 kHz speech super-resolution, only where it's needed.
 
@@ -305,20 +328,55 @@ def rebuild(audio: np.ndarray, above_hz: float | None = None) -> tuple[np.ndarra
     if edge is None:
         progress.fraction(1.0)
         return audio, "rebuild skipped (full bandwidth)"
+    if above_hz is None and edge >= REBUILD_MAX_HZ:
+        # e.g. the 16-17 kHz cutoff of an MP3/AAC export: nothing speech needs is missing
+        progress.fraction(1.0)
+        return audio, f"rebuild skipped (bandwidth to {_fmt_hz(edge)} is enough for speech)"
     _need_clearvoice()
     _install_band_fix()
     cv = _cv("speech_super_resolution", "MossFormer2_SR_48K")
     voc = cv.models[0].model[1]
     window, stride = 4 * SR, 3 * SR
     voc.count, voc.expected = 0, max(1, -(-(max(audio.size, window) - window) // stride) + 2)
-    _BAND_EDGE["hz"] = edge * 0.95 if above_hz is None else edge
+    f_high = edge * 0.95 if above_hz is None else edge
+    _BAND_EDGE["hz"] = f_high
     try:
         y = _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio, whole=True)
     finally:
         _BAND_EDGE.clear()
         voc.expected = 0
+    y = _cap_generated(y, audio, f_high)
     progress.fraction(1.0)
     return y, f"rebuilt above {_fmt_hz(edge)}"
+
+
+def _cap_generated(y: np.ndarray, ref: np.ndarray, f_high: float, max_db: float = 6.0) -> np.ndarray:
+    """Keep the generated part no louder than the real audio just below the cutoff.
+
+    On windows with no speech (room tone, a quiet intro) the vocoder invents a
+    loud hiss: 40-65 dB over the input, and ClearVoice's gentle crossover lets
+    it leak well below the cutoff too. In natural speech the band above a
+    cutoff sits within a few dB of the one below it (+12 dB on the strongest
+    "s"), so at each moment the whole generated part is capped at `max_db`
+    over the recording's [f_high/1.5, f_high) band.
+    """
+    from clearvoice.utils import bandwidth_sub as bs
+    from scipy.ndimage import minimum_filter1d, uniform_filter1d
+    from scipy.signal import istft, stft
+    # y = kept + generated, with kept made exactly as in _install_band_fix
+    kept = _fit(bs.lowpass_filter(np.asarray(ref, dtype=np.float64), SR, f_high), y.size)
+    n = 1024
+    f, _, G = stft(y - kept, SR, nperseg=n)
+    _, _, R = stft(ref, SR, nperseg=n)
+    gen = (np.abs(G) ** 2).sum(0)
+    below = (np.abs(R[(f >= f_high / 1.5) & (f < f_high)]) ** 2).sum(0)
+    m = min(gen.size, below.size)
+    gain_db = np.minimum(0.0, 10 * np.log10((below[:m] * 10 ** (max_db / 10) + 1e-20) / (gen[:m] + 1e-20)))
+    # ~50 ms smoothing, taking the lowest gain nearby so a hiss burst can't slip past
+    gain_db = uniform_filter1d(minimum_filter1d(gain_db, 5), 5)
+    G[:, :m] *= 10 ** (gain_db / 20)
+    _, g = istft(G, SR, nperseg=n)
+    return (kept + _fit(g, y.size)).astype(np.float32)
 
 
 def _fmt_hz(hz: float) -> str:

@@ -18,6 +18,7 @@ from .backends import BACKENDS, available_backends, clearvoice_available, deepfi
 from .declip import declip
 from .dereverb import dereverb
 from .protect import protect
+from .gate import gate
 from .guard import GuardSettings, apply_guard
 from .tone import PROFILES, LOW_SPLIT_HZ, apply_eq, apply_eq_voice_only_lows, correction, target_from, with_presence
 
@@ -54,7 +55,8 @@ def ts(sec: float) -> str:
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
             gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False,
             dry: float = 1.0, rebuild_above: float | None = None,
-            repair_clipping: bool = True, protect_db: float = 22.0) -> tuple[np.ndarray, str]:
+            repair_clipping: bool = True, protect_db: float = 0.0,
+            gate_db: float = 30.0) -> tuple[np.ndarray, str]:
     notes = []
     if repair_clipping:
         prog.stage("declip")
@@ -82,6 +84,10 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
             note += "\n    at " + ", ".join(f"{ts(a)} ({b - a:.1f}s)" for a, b in regions)
     if mix < 1.0:
         cleaned = mix * cleaned + (1 - mix) * audio
+    if backend != "none" and gate_db > 0:
+        # after the mix, so --mix can't bring the background voices back
+        cleaned, closed = gate(cleaned, below_db=gate_db)
+        note += f", gate closed {closed * 100:.0f}% of the time"
     if backend != "none" and dry > 0:
         prog.stage("dereverb")
         cleaned = dereverb(cleaned, dry)
@@ -175,10 +181,14 @@ def main(argv: list[str] | None = None) -> None:
                     help="skip the rebuild step (regenerating missing high frequencies)")
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
                     help="force the rebuild to regenerate everything above this frequency (default: detect where "
-                         "the recording's bandwidth stops; full-band recordings aren't rebuilt)")
-    ap.add_argument("--protect", type=float, default=22.0, metavar="dB",
+                         "the recording's bandwidth stops; recordings that reach 12 kHz aren't rebuilt)")
+    ap.add_argument("--protect", type=float, default=0.0, metavar="dB",
                     help="keep speech that's this far above the room noise from the original, so the AI can't duck "
-                         "it (default 22; 0 = off, higher = let the AI process more)")
+                         "it; try 22 if loud syllables dip in level (default 0 = off: the original's noise stays out "
+                         "of the speech)")
+    ap.add_argument("--gate", type=float, default=30.0, metavar="dB",
+                    help="silence anything this far below the main speaker, e.g. faint voices in the background "
+                         "that the AI keeps because they're speech (default 30; 0 = off, higher = keep quieter sounds)")
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
@@ -203,8 +213,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
     ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
                     help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
-    ap.add_argument("--tone", default="warm",
-                    help="tone target: 'warm' (default: EQ toward Adobe's measured tone, adds the body a thin mic lacks), 'neutral', "
+    ap.add_argument("--tone", default="neutral",
+                    help="tone target: 'neutral' (default: keeps the recording's own tone), 'warm' (EQ toward Adobe's "
+                         "measured tone, adds the body a thin mic lacks but also lifts room boom and hiss), "
                          "or a path to a reference recording whose sound you want to match")
     ap.add_argument("--tone-amount", type=float, default=1.0, metavar="0-1",
                     help="how far to move toward the tone target (default 1.0)")
@@ -287,8 +298,8 @@ def main(argv: list[str] | None = None) -> None:
                 else:
                     level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
             avail = available_backends()
-            variants = [("deepfilter_warm", "deepfilter", guard, "warm"),        # the default
-                        ("deepfilter_neutral", "deepfilter", guard, "neutral"),
+            variants = [("deepfilter_neutral", "deepfilter", guard, "neutral"),  # the default
+                        ("deepfilter_warm", "deepfilter", guard, "warm"),
                         ("deepfilter_no-guard", "deepfilter", None, "warm")]
             if "resemble" in avail:
                 variants.append(("resemble_warm", "resemble", guard, "warm"))
@@ -297,7 +308,8 @@ def main(argv: list[str] | None = None) -> None:
                                    stages_for(args, b, g, args.rebuild, decode=False, tone=tone), backend=b):
                     y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
                                       verbose=args.verbose, rebuild_hf=args.rebuild, dry=args.dereverb,
-                                      repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above)
+                                      repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
+                                      gate_db=args.gate)
                     result = render(y, folder / f"{n}_{label}{fmt}", args, ref, tone=tone)
                 log(f"  -> {result}")
                 log(f"     {note}")
@@ -317,7 +329,7 @@ def main(argv: list[str] | None = None) -> None:
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
                               rebuild_hf=args.rebuild, verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip, protect_db=args.protect,
-                              rebuild_above=args.rebuild_above)
+                              rebuild_above=args.rebuild_above, gate_db=args.gate)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)
         log(f"  -> {result}  [{audio.size / SR / 60:.1f} min audio in {int(mins)}m{int(secs):02d}s]")
