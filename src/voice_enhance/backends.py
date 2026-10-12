@@ -140,15 +140,28 @@ class _OutputToCPU:
 
     ClearVoice's sliding-window SR decoder writes each segment into a float64
     CPU tensor; with the model on Apple's GPU (MPS, no float64) that copy fails.
+    Some torch/macOS pairings also refuse its long 1-D convolutions on MPS
+    ("Output channels > 65536"); then the vocoder moves to the CPU for good.
     """
 
     def __init__(self, module):
         self._m = module
         self.expected = 0  # windows expected for the current file (for the progress bar)
         self.count = 0
+        self.on_cpu = False
 
     def __call__(self, *a, **k):
-        out = self._m(*a, **k).float().cpu()
+        try:
+            if self.on_cpu:
+                a = [x.cpu() if hasattr(x, "cpu") else x for x in a]
+            out = self._m(*a, **k)
+        except NotImplementedError as e:
+            if self.on_cpu or "MPS" not in str(e):
+                raise
+            self._m.to("cpu")
+            self.on_cpu = True
+            return self(*a, **k)
+        out = out.float().cpu()
         self.count += 1
         if self.expected:
             from . import progress
@@ -219,7 +232,7 @@ def _cv_run(task: str, model: str, audio: np.ndarray, whole: bool = False) -> np
 def _need_clearvoice() -> None:
     if not clearvoice_available():
         raise SystemExit("ClearerVoice isn't installed. Reinstall with:\n"
-                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
                          "or skip the rebuild with --no-rebuild")
 
 

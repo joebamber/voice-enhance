@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> None:
     require_ffmpeg()
     if args.rebuild and not clearvoice_available():
         raise SystemExit("The rebuild step needs ClearerVoice. Reinstall with:\n"
-                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
                          "or run with --no-rebuild")
     if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1:
         raise SystemExit("--mix and --laughter-guard must be between 0 and 1")
