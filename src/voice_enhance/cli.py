@@ -156,7 +156,15 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
             # last of all, on the finished voice; only the level is set after it
             from . import sidon
             prog.stage("studio")
-            save_wav(sidon.run(load(b)), b)
+            voice = load(b)
+            studio = sidon.run(voice)
+            fc = sidon.CROSSOVER_HZ.get(args.studio_strength)
+            if fc:
+                # never above where the recording stops, or the band in between would be empty
+                from .backends import bandwidth_edge
+                edge = bandwidth_edge(voice)
+                studio = sidon.split(voice, studio, min(fc, 0.95 * edge) if edge else fc)
+            save_wav(studio, b)
         prog.stage("loudness")
         if args.lufs is not None:
             loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
@@ -201,6 +209,10 @@ def parser() -> argparse.ArgumentParser:
                     help="finish by re-synthesising the voice with Sidon, so it sounds like a close, high-quality "
                          "podcast mic. Runs after everything else (only the level is set after it); replaces the "
                          "rebuild. Use -b none to give it the voice without AI noise removal")
+    ap.add_argument("--studio-strength", default="subtle", choices=["subtle", "medium", "strong"],
+                    help="with --studio: 'subtle' (default) keeps the real voice below 8 kHz and uses Sidon only "
+                         "above it, which avoids its synthetic sound; 'medium' crosses over at 4 kHz; 'strong' is "
+                         "all Sidon")
     ap.add_argument("--declip", action="store_true",
                     help="repair clipped (flat-topped) peaks before cleanup (default off)")
     ap.add_argument("--no-declip", dest="declip", action="store_false", help=argparse.SUPPRESS)  # the old default

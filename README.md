@@ -39,6 +39,7 @@ Opens the app in your browser. It runs on your Mac like the command line. Drop a
 | `--rebuild-above 8000` | Forces the rebuild to regenerate everything above that frequency, even on full-band audio. | Auto-detected |
 | `--dereverb 0.5` | Adds DSP reverb-tail suppression on top of the AI. | 0 (off) |
 | `--studio` | Finishes by re-synthesising the voice with [Sidon](https://huggingface.co/sarulab-speech/sidon-v0.1) so it sounds like a close, high-quality podcast mic. It's the last step: everything else (cleanup, gate, polish) runs first, and only the output level is set after it. It hears the voice up to 8 kHz and generates the rest, so it replaces the rebuild. About 6 minutes per hour of audio. Add `-b none` to give it the voice without AI noise removal. | Off |
+| `--studio-strength strong` | With `--studio`: `subtle` keeps your real voice below 8 kHz and uses Sidon only above it (close-mic air without the synthetic sound); `medium` uses Sidon from 4 kHz; `strong` is all Sidon. | `subtle` |
 | `--declip` | Repairs clipped (flat-topped) peaks before cleanup. | Off |
 | `--protect 22` | Turns on speech protection: speech this far above the room noise comes from the original, noise and all, so the AI can't duck loud syllables. Use it if loud words dip in level. Higher values let the AI process more. | 0 (off) |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. | No cap |

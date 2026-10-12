@@ -192,7 +192,7 @@
   <div class="grid">
     <section class="card">
       <h2>Noise</h2>
-      <div class="ctl" data-key="backend"><label class="name"><input type="checkbox" class="sw">AI noise removal<span class="ai" title="DeepFilterNet, a neural network. Changing this re-runs it.">✦ AI</span></label><span></span>
+      <div class="ctl" data-key="backend"><label class="name"><input type="checkbox" class="sw">Noise removal<span class="ai" title="DeepFilterNet, a neural network. Changing this re-runs it.">✦ AI</span></label><span></span>
         <small>DeepFilterNet takes out background noise and keeps the voice natural. Off leaves the recording as it is, and the controls that work on its result are greyed out.</small></div>
       <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="ai" title="A DeepFilterNet setting. Changing this re-runs it.">✦ AI</span></label><output></output>
         <input type="range" min="3" max="40" step="1">
@@ -226,6 +226,9 @@
         <small>Rounds off peaks that hit the recorder's ceiling (flat-topped waveform).</small></div>
       <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="Sidon, a neural network, re-synthesises the voice.">✦ AI</span></label><span></span>
         <small id="studio-hint">The last step: Sidon's AI re-synthesises the finished voice as if recorded close on a high-quality mic. About 6 minutes per hour of audio, re-run on every change. Turn AI noise removal off to give it the voice without it.</small></div>
+      <label class="ctl" data-key="studio_strength" data-studio><span class="name">Studio strength</span>
+        <select><option value="subtle">Subtle</option><option value="medium">Medium</option><option value="strong">Strong</option></select>
+        <small>Subtle keeps your real voice and adds Sidon's close-mic air above 8 kHz; Medium uses Sidon from 4 kHz. Strong is all Sidon: the biggest change, but it can sound synthetic.</small></label>
     </section>
 
   </div>
@@ -287,6 +290,7 @@ function syncControls() {
     if (range && on) { range.value = v; $('output', el).textContent = (spec.fmt || String)(v); }
     if (sel) sel.value = typeof v === 'boolean' ? (v ? '1' : '0') : v;
     if (box) box.checked = !!v;
+    if (el.dataset.studio != null) el.classList.toggle('hidden', !settings.studio);
     if (el.dataset.show) {
       const ok = el.dataset.show.split(' ').includes(settings.backend);
       el.classList.toggle('disabled', !ok);
