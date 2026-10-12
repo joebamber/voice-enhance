@@ -69,9 +69,8 @@ def memo(cache: dict | None, kind: str, key: tuple, fn):
 
 
 def cleanup_key(backend: str) -> tuple:
-    from . import backends as _b, resemble
-    settings = sorted(resemble.SETTINGS.items()) if backend.startswith("resemble") else None
-    return backend, _b.DF_SETTINGS["max_reduction_db"], repr(settings)
+    from . import backends as _b
+    return backend, _b.DF_SETTINGS["max_reduction_db"]
 
 
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
@@ -91,9 +90,9 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     key = (repair_clipping, cleanup_key(backend))
     cleaned, cached = memo(cache, "cleanup", key, lambda: BACKENDS[backend](audio))
     notes.append(f"{backend} " + ("(reused)" if cached else f"{time.time() - t:.1f}s"))
-    # Mask-based cleaners stay sample-aligned with the input, so loud (already
-    # clean) speech can come from the original; generative ones can't be blended.
-    if protect_db > 0 and backend in ("deepfilter", "clearvoice", "resemble-denoise"):
+    # DeepFilterNet stays sample-aligned with the input, so loud (already clean)
+    # speech can come from the original.
+    if protect_db > 0 and backend == "deepfilter":
         cleaned, frac = protect(audio, cleaned, clean_above_db=protect_db)
         notes.append(f"loud speech kept from the original {frac * 100:.0f}% of the time")
     note = ", ".join(notes)
@@ -125,6 +124,11 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     return cleaned, note
 
 
+def rebuild_wanted(args) -> bool:
+    """Studio mic generates its own top end from the voice below 8 kHz, so a rebuild before it is wasted."""
+    return args.rebuild and not args.studio
+
+
 def is_toned(args, tone: str | None = None) -> bool:
     tone = tone or args.tone
     return not (args.no_polish or tone == "neutral" or args.tone_amount == 0)
@@ -144,7 +148,7 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
         st.append("rebuild")
     if is_toned(args, tone):
         st.append("tone")
-    return st + ["polish", "loudness"]
+    return st + ["polish"] + (["studio"] if args.studio else []) + ["loudness"]
 
 
 def short(name: str, n: int = 28) -> str:
@@ -176,6 +180,11 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float, tone: str | None
                 for f, g in trim:
                     total[f] += g
                 log("    tone: " + " ".join(f"{f}:{g:+.0f}" for f, g in total.items() if abs(g) >= 1))
+        if args.studio:
+            # last of all, on the finished voice; only the level is set after it
+            from . import sidon
+            prog.stage("studio")
+            save_wav(sidon.run(load(b)), b)
         prog.stage("loudness")
         if args.lufs is not None:
             loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
@@ -200,7 +209,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("inputs", nargs="*", help="audio/video files or folders")
     ap.add_argument("-o", "--output", help="output file (single input) or folder")
     ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
-                    help="engine: deepfilter (default: natural-sounding AI noise removal), resemble (generative re-synthesis; removes more reverb but can sound robotic, and is slow), resemble-denoise, clearvoice, apple, none")
+                    help="noise removal: deepfilter (default: DeepFilterNet AI noise removal) or none")
     ap.add_argument("--no-rebuild", dest="rebuild", action="store_false",
                     help="skip the rebuild step (regenerating missing high frequencies)")
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
@@ -216,19 +225,17 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
-    ap.add_argument("--quality", type=int, default=64, metavar="STEPS",
-                    help="resemble: generation steps (default 64; 32 is ~2x faster, slightly rougher; up to 128)")
-    ap.add_argument("--temperature", type=float, default=0.5, metavar="0-1",
-                    help="resemble: prior temperature (default 0.5; lower = steadier, higher = more natural variation)")
-    ap.add_argument("--denoise-first", action="store_true",
-                    help="resemble: run its denoiser before re-synthesis (stronger cleanup; can sound more processed)")
+    ap.add_argument("--studio", action="store_true",
+                    help="finish by re-synthesising the voice with Sidon, so it sounds like a close, high-quality "
+                         "podcast mic. Runs after everything else (only the level is set after it); replaces the "
+                         "rebuild. Use -b none to give it the voice without AI noise removal")
     ap.add_argument("--declip", action="store_true",
                     help="repair clipped (flat-topped) peaks before cleanup (default off)")
     ap.add_argument("--no-declip", dest="declip", action="store_false", help=argparse.SUPPRESS)  # the old default
     ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
                     help="extra DSP tail suppression after the AI (default 0 = off; the AI handles reverb)")
     ap.add_argument("--compare", action="store_true",
-                    help="render every backend with and without the laughter guard and the rebuild "
+                    help="render DeepFilterNet with the neutral and warm tones and without the laughter guard "
                          "into <name>_compare/ for A/B listening")
     ap.add_argument("-f", "--format", default="wav", help="output format: wav, flac, m4a, mp3, aiff (default wav)")
     ap.add_argument("--lufs", type=float, default=None,
@@ -250,7 +257,7 @@ def parser() -> argparse.ArgumentParser:
                     help="low end relative to the tone target: lower = less boom (default -4; 0 = Adobe's full low end)")
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
-    ap.add_argument("--list-backends", action="store_true", help="show which backends work on this machine")
+    ap.add_argument("--list-backends", action="store_true", help="list the noise-removal options")
     ap.add_argument("--gui", action="store_true",
                     help="open the app in your browser: sliders, and an A/B player against the original")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
@@ -272,11 +279,10 @@ def configure(args) -> None:
     args._targets.setdefault("warm", with_presence(target_from("warm"), args.presence, args.warmth))
     from . import backends as _b
     _b.DF_SETTINGS["max_reduction_db"] = args.max_reduction
-    from . import resemble
-    if not 1 <= args.quality <= 128 or not 0 <= args.temperature <= 1:
-        raise SystemExit("--quality must be 1-128 and --temperature 0-1")
-    resemble.SETTINGS.update(nfe=args.quality, temperature=args.temperature,
-                             denoise_first=0.9 if args.denoise_first else 0.1)
+    from . import sidon
+    if args.studio and not sidon.available():
+        raise SystemExit("--studio needs the transformers package. Reinstall with:\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -307,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args.inputs:
         ap.error("give at least one audio file or folder")
     require_ffmpeg()
-    if args.rebuild and not clearvoice_available():
+    if rebuild_wanted(args) and not clearvoice_available():
         raise SystemExit("The rebuild step needs ClearerVoice. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
                          "or run with --no-rebuild")
@@ -339,17 +345,14 @@ def main(argv: list[str] | None = None) -> None:
                     loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
                 else:
                     level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
-            avail = available_backends()
             variants = [("deepfilter_neutral", "deepfilter", guard, "neutral"),  # the default
                         ("deepfilter_warm", "deepfilter", guard, "warm"),
                         ("deepfilter_no-guard", "deepfilter", None, "warm")]
-            if "resemble" in avail:
-                variants.append(("resemble_warm", "resemble", guard, "warm"))
             for n, (label, b, g, tone) in enumerate(variants, start=1):
                 with prog.progress(short(f"{n}_{label}", 30),
-                                   stages_for(args, b, g, args.rebuild, decode=False, tone=tone), backend=b):
+                                   stages_for(args, b, g, rebuild_wanted(args), decode=False, tone=tone), backend=b):
                     y, note = process(audio, b, mix=args.mix, guard=g, cache=cache,
-                                      verbose=args.verbose, rebuild_hf=args.rebuild, dry=args.dereverb,
+                                      verbose=args.verbose, rebuild_hf=rebuild_wanted(args), dry=args.dereverb,
                                       repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
                                       gate_db=args.gate)
                     result = render(y, folder / f"{n}_{label}{fmt}", args, ref, tone=tone)
@@ -365,12 +368,12 @@ def main(argv: list[str] | None = None) -> None:
             folder.mkdir(parents=True, exist_ok=True)
             dst = folder / f"{src.stem}_enhanced{fmt}"
         log(f"\n{src.name}")
-        with prog.progress(short(src.stem), stages_for(args, args.backend, guard, args.rebuild, decode=True),
+        with prog.progress(short(src.stem), stages_for(args, args.backend, guard, rebuild_wanted(args), decode=True),
                            backend=args.backend):
             prog.stage("decode")
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, cache=cache,
-                              rebuild_hf=args.rebuild, verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip, protect_db=args.protect,
+                              rebuild_hf=rebuild_wanted(args), verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip, protect_db=args.protect,
                               rebuild_above=args.rebuild_above, gate_db=args.gate)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)

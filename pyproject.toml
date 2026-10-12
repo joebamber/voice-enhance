@@ -13,12 +13,11 @@ dependencies = [
     "soundfile>=0.12",
     "scipy>=1.10",
     "tqdm>=4.66",
-    # ClearerVoice-Studio: MossFormer2 48 kHz rebuild (default) and cleanup models.
+    # ClearerVoice-Studio: the MossFormer2 48 kHz rebuild.
     # Weights (~2 GB) download from Hugging Face on first use.
     "clearvoice>=0.1.2",
-    # Resemble Enhance (default engine). Its exact pins are relaxed via overrides.txt,
-    # so install with: uv tool install ... --overrides overrides.txt
-    "resemble-enhance==0.0.1",
+    # Sidon (--studio): its feature front end. Weights download from Hugging Face on first use.
+    "transformers>=4.40",
 ]
 
 [project.optional-dependencies]

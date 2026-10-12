@@ -13,8 +13,8 @@ from typing import Callable
 
 from tqdm import tqdm
 
-WEIGHTS = {"decode": 1, "declip": 1, "cleanup": 6, "guard": 3, "dereverb": 1, "rebuild": 80, "tone": 2, "polish": 4, "loudness": 4}
-LABELS = {"decode": "reading", "declip": "fixing clipping", "cleanup": "cleaning up", "guard": "laughter guard", "dereverb": "dereverb", "rebuild": "rebuilding",
+WEIGHTS = {"decode": 1, "declip": 1, "cleanup": 6, "guard": 3, "dereverb": 1, "rebuild": 80, "studio": 10, "tone": 2, "polish": 4, "loudness": 4}
+LABELS = {"decode": "reading", "declip": "fixing clipping", "cleanup": "cleaning up", "guard": "laughter guard", "dereverb": "dereverb", "rebuild": "rebuilding", "studio": "studio mic",
           "tone": "tone", "polish": "polishing", "loudness": "writing"}
 
 _active: "Progress | None" = None
@@ -27,10 +27,6 @@ class Progress:
     def __init__(self, label: str, stages: list[str], backend: str | None = None):
         self.label = label
         w = dict(WEIGHTS)
-        if backend and backend.startswith("resemble"):
-            w.update(cleanup=80 if backend == "resemble" else 20, rebuild=5)
-        elif backend == "clearvoice":
-            w.update(cleanup=20)
         self.weights = {s: w[s] for s in stages}
         self.total = float(sum(self.weights.values()))
         self.base = 0.0

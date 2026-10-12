@@ -8,14 +8,14 @@
   :root {
     --bg: #f4f3ef; --panel: #ffffff; --ink: #1d1c1a; --muted: #6f6c66; --line: #e3e0d9;
     --accent: #d9481f; --accent-soft: rgba(217, 72, 31, .12); --orig: #b4b0a8; --wave-bg: #faf9f6;
-    --ok: #2f7d4f; --err: #b3261e; --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+    --ok: #2f7d4f; --err: #b3261e; --ai: #6a45d1; --ai-soft: rgba(106, 69, 209, .1); --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #121211; --panel: #1b1b1a; --ink: #ecebe8; --muted: #9b978f; --line: #2c2b29;
       --accent: #ff7043; --accent-soft: rgba(255, 112, 67, .14); --orig: #77736b; --wave-bg: #161615;
-      --ok: #6fcf97; --err: #ff8a80; --shadow: none;
+      --ok: #6fcf97; --err: #ff8a80; --ai: #b39dfa; --ai-soft: rgba(179, 157, 250, .14); --shadow: none;
       color-scheme: dark;
     }
   }
@@ -109,9 +109,10 @@
   .ctl .sw { accent-color: var(--accent); margin: 0 6px 0 0; }
   .ctl label.name { cursor: pointer; }
   .ctl.off input[type=range], .ctl.off output { display: none; }
+  .ai { font-size: 10px; font-weight: 600; color: var(--ai); background: var(--ai-soft); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; white-space: nowrap; }
+  .ctl:has(.ai) .sw { accent-color: var(--ai); }
+  .key { margin: 16px 2px -4px; color: var(--muted); font-size: 12px; }
   .slow { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 6px; font-weight: 500; vertical-align: 1px; }
-  .check { display: flex; gap: 8px; align-items: baseline; }
-  .check input { accent-color: var(--accent); }
   input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 2px; }
 
   footer {
@@ -185,65 +186,56 @@
     <div class="note mono" id="note"></div>
   </section>
 
+  <p class="key"><span class="ai">✦ AI</span> uses a neural network: slower than the rest, and it changes the sound rather than just the level or EQ. Everything else is standard audio processing.</p>
   <p class="lockmsg" id="lockmsg" hidden></p>
   <fieldset id="settings">
   <div class="grid">
     <section class="card">
       <h2>Noise</h2>
-      <label class="ctl" data-key="backend"><span class="name">Engine<span class="slow" title="Changing this re-runs the AI cleanup">re-runs AI</span></span><span></span>
-        <select></select>
-        <small id="backend-hint"></small></label>
-      <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="slow" title="Changing this re-runs the AI cleanup">re-runs AI</span></label><output></output>
+      <div class="ctl" data-key="backend"><label class="name"><input type="checkbox" class="sw">AI noise removal<span class="ai" title="DeepFilterNet, a neural network. Changing this re-runs it.">✦ AI</span></label><span></span>
+        <small>DeepFilterNet takes out background noise and keeps the voice natural. Off leaves the recording as it is, and the controls that work on its result are greyed out.</small></div>
+      <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="ai" title="A DeepFilterNet setting. Changing this re-runs it.">✦ AI</span></label><output></output>
         <input type="range" min="3" max="40" step="1">
         <small>Caps how far any sound is pushed down. Lower leaves natural room tone in the pauses (turn the gate off to hear it).</small></div>
       <label class="ctl" data-key="mix"><span class="name">Mix</span><output></output>
         <input type="range" min="0" max="1" step="0.05">
         <small>Below 100% blends the original (noise included) back in.</small></label>
-      <div class="ctl" data-key="protect" data-show="deepfilter clearvoice resemble-denoise"><label class="name"><input type="checkbox" class="sw">Protect loud speech</label><output></output>
+      <div class="ctl" data-key="protect" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Protect loud speech</label><output></output>
         <input type="range" min="1" max="40" step="1">
         <small>Turn on if loud words dip in level: speech this far above the room noise comes from the original.</small></div>
     </section>
 
     <section class="card">
       <h2>Background</h2>
-      <div class="ctl" data-key="gate"><label class="name"><input type="checkbox" class="sw">Background gate</label><output></output>
+      <div class="ctl" data-key="gate" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Background gate</label><output></output>
         <input type="range" min="1" max="60" step="1">
         <small>Silences anything this far below the speaker, like faint voices in the background. Higher keeps quieter sounds.</small></div>
-      <div class="ctl" data-key="laughter_guard"><label class="name"><input type="checkbox" class="sw">Laughter guard</label><output></output>
+      <div class="ctl" data-key="laughter_guard" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Laughter guard<span class="ai" title="Runs a second, gentle DeepFilterNet pass for laughs.">✦ AI</span></label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small>Protects laughs from the cleanup. Lower it if noise comes and goes around laughs.</small></div>
-      <div class="ctl" data-key="dereverb"><label class="name"><input type="checkbox" class="sw">Dereverb</label><output></output>
+      <div class="ctl" data-key="dereverb" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Dereverb</label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small>Extra suppression of room echo tails, on top of the AI.</small></div>
     </section>
 
     <section class="card">
       <h2>Tone &amp; repair</h2>
-      <label class="ctl" data-key="tone"><span class="name">Tone</span><span></span>
-        <select><option value="neutral">Neutral: the recording's own tone</option><option value="warm">Warm: EQ toward Adobe's tone</option></select>
-        <small>Warm adds body to a thin mic, but lifts boom and hiss on a good one.</small></label>
+      <div class="ctl" data-key="tone"><label class="name"><input type="checkbox" class="sw">Warm tone</label><span></span>
+        <small>EQ toward Adobe's tone: adds body to a thin mic, but lifts boom and hiss on a good one. Off keeps the recording's own tone.</small></div>
       <label class="ctl" data-key="warmth" data-tone="warm"><span class="name">Warmth</span><output></output>
         <input type="range" min="-12" max="6" step="1">
         <small>Low end. Lower is less boomy.</small></label>
       <label class="ctl" data-key="presence" data-tone="warm"><span class="name">Presence</span><output></output>
         <input type="range" min="0" max="12" step="1">
         <small>Clarity: lifts 3–8 kHz.</small></label>
-      <label class="ctl" data-key="rebuild"><span class="name">Rebuild high frequencies</span><span></span>
-        <select><option value="1">Auto: only if band-limited (phone, Zoom)</option><option value="0">Off</option></select>
-        <small id="rebuild-hint">Regenerates the treble a recording is missing below 12 kHz. Slow on long files.</small></label>
-      <label class="ctl check" data-key="declip"><input type="checkbox"><span class="name">Repair clipped peaks<span class="slow" title="Changing this re-runs the AI cleanup">re-runs AI</span></span></label>
+      <div class="ctl" data-key="rebuild"><label class="name"><input type="checkbox" class="sw">Rebuild high frequencies<span class="ai" title="MossFormer2, a neural network, generates the missing treble.">✦ AI</span></label><span></span>
+        <small id="rebuild-hint">Only acts on band-limited recordings (phone, Zoom): regenerates the treble missing below 12 kHz. Slow on long files.</small></div>
+      <div class="ctl" data-key="declip"><label class="name"><input type="checkbox" class="sw">Repair clipped peaks<span class="slow" title="Repairs before the AI cleanup, so changing it re-runs that">re-runs AI</span></label><span></span>
+        <small>Rounds off peaks that hit the recorder's ceiling (flat-topped waveform).</small></div>
+      <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="Sidon, a neural network, re-synthesises the voice.">✦ AI</span></label><span></span>
+        <small id="studio-hint">The last step: Sidon's AI re-synthesises the finished voice as if recorded close on a high-quality mic. About 6 minutes per hour of audio, re-run on every change. Turn AI noise removal off to give it the voice without it.</small></div>
     </section>
 
-    <section class="card" id="resemble-card" hidden>
-      <h2>Resemble</h2>
-      <label class="ctl" data-key="quality"><span class="name">Quality<span class="slow">re-runs AI</span></span><output></output>
-        <input type="range" min="8" max="128" step="8">
-        <small>Generation steps. 32 is about twice as fast; 128 is smoother.</small></label>
-      <label class="ctl" data-key="temperature"><span class="name">Temperature<span class="slow">re-runs AI</span></span><output></output>
-        <input type="range" min="0" max="1" step="0.05">
-        <small>Lower is steadier; higher sounds more natural but less consistent.</small></label>
-      <label class="ctl check" data-key="denoise_first"><input type="checkbox"><span class="name">Denoise first<span class="slow">re-runs AI</span></span></label>
-    </section>
   </div>
   </fieldset>
 </div>
@@ -273,23 +265,15 @@ const post = (url, body, headers = {}) => fetch(url, {
   body: body instanceof Blob ? body : JSON.stringify(body || {}),
 }).then(r => r.json());
 
-const BACKEND_LABELS = {
-  deepfilter: 'DeepFilterNet: natural AI noise removal',
-  resemble: 'Resemble: re-synthesis, removes echo, slow',
-  'resemble-denoise': 'Resemble denoiser only',
-  clearvoice: 'ClearerVoice',
-  apple: 'Apple voice isolation',
-  none: 'None: no noise removal',
-};
-const BACKEND_HINTS = {
-  deepfilter: 'The default. Keeps the voice natural.',
-  resemble: 'Strongest cleanup but can sound robotic. Several minutes per minute of audio.',
-  none: 'Keeps declip (if on), rebuild and tone only.',
-};
 const db = v => `${v > 0 ? '+' : ''}${v} dB`;
 // Settings with an off state get a switch (off: the value the CLI treats as off; on: where the
 // slider starts when switched on, unless it was on before or is on by default).
 const SPECS = {
+  backend: { off: 'none', on: 'deepfilter' },  // -b deepfilter / -b none
+  tone: { off: 'neutral', on: 'warm' },
+  rebuild: { off: false, on: true },
+  declip: { off: false, on: true },
+  studio: { off: false, on: true },
   max_reduction: { fmt: v => `${v} dB`, off: null, on: 12 },
   mix: { fmt: v => `${Math.round(v * 100)}%` },
   protect: { fmt: v => `${v} dB`, off: 0, on: 22 },
@@ -298,11 +282,10 @@ const SPECS = {
   dereverb: { fmt: v => v.toFixed(2), off: 0, on: 0.5 },
   warmth: { fmt: db },
   presence: { fmt: db },
-  quality: { fmt: v => `${v} steps` },
-  temperature: { fmt: v => v.toFixed(2) },
 };
 
 let info, settings, status = {}, fileId = null, version = 0;
+const REBUILD_HINT = $('#rebuild-hint').textContent;
 const lastOn = {};  // value each switched-off setting had, to come back to
 
 // --- settings ---------------------------------------------------------------
@@ -323,11 +306,14 @@ function syncControls() {
     }
     if (el.dataset.tone) el.classList.toggle('hidden', settings.tone !== el.dataset.tone);
   }
-  $('#resemble-card').hidden = !settings.backend.startsWith('resemble');
-  $('#backend-hint').textContent = BACKEND_HINTS[settings.backend] || '';
   $('#lufs').value = settings.lufs == null ? '' : String(settings.lufs);
   $('#format').value = settings.format;
-  if (!info.rebuild_available) { $('[data-key=rebuild] select').disabled = true; $('#rebuild-hint').textContent = 'Needs ClearerVoice, which isn\'t installed.'; }
+  if (!info.studio_available) { $('[data-key=studio] .sw').disabled = true; $('#studio-hint').textContent = 'Needs the transformers package: reinstall voice-enhance.'; }
+  const studioOn = settings.studio;
+  $('[data-key=rebuild] .sw').disabled = !info.rebuild_available || studioOn;
+  $('[data-key=rebuild]').classList.toggle('disabled', studioOn);
+  $('#rebuild-hint').textContent = studioOn ? 'Skipped: Studio mic generates its own high frequencies.'
+    : !info.rebuild_available ? 'Needs ClearerVoice, which isn\'t installed.' : REBUILD_HINT;
 }
 
 async function change(k, v) {
@@ -638,9 +624,6 @@ addEventListener('keydown', e => {
   info = await (await fetch('/api/info')).json();
   $('#ver').textContent = info.version;
   settings = { ...info.defaults };
-  $('[data-key=backend] select').innerHTML = info.backends
-    .slice().sort((a, b) => (a === 'deepfilter' ? -1 : b === 'deepfilter' ? 1 : a === 'none' ? 1 : b === 'none' ? -1 : 0))
-    .map(b => `<option value="${b}">${BACKEND_LABELS[b] || b}</option>`).join('');
   $('#format').innerHTML = info.formats.filter(f => f !== 'aif').map(f => `<option value="${f}">${f.toUpperCase()}</option>`).join('');
   bindControls();
   syncControls();

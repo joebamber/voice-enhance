@@ -1,10 +1,5 @@
 # Overrides replace *every* requirement on a package (including torchaudio's own
 # pin on torch), so torch / torchaudio / torchvision must be pinned to a matching set.
-# resemble-enhance 0.0.1 pins exact (old) versions of everything, including
-# deepspeed and gradio, which are only needed for training / its web demo.
-# These overrides let it share our environment; voice_enhance stubs deepspeed.
-deepspeed ; sys_platform == "never"
-gradio ; sys_platform == "never"
 torch==2.5.1
 torchaudio==2.5.1
 torchvision==0.20.1

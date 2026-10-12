@@ -4,15 +4,11 @@ with the input and the same length, so outputs can be blended sample-for-sample.
 from __future__ import annotations
 
 import os
-import platform
-import shutil
-import subprocess
 import sys
 import tempfile
 import warnings
 from contextlib import contextmanager
 from functools import lru_cache
-from importlib import resources
 from pathlib import Path
 
 import numpy as np
@@ -122,7 +118,7 @@ def deepfilter(audio: np.ndarray, atten_lim_db: float | None = None) -> np.ndarr
     return (chunked(run, (audio * gain).astype(np.float32)) / gain).astype(np.float32)
 
 
-# --- ClearerVoice-Studio (optional extra) ---------------------------------------
+# --- ClearerVoice-Studio: the rebuild ---------------------------------------
 
 def clearvoice_available() -> bool:
     try:
@@ -227,26 +223,20 @@ def _cv(task: str, model: str):
     return cv
 
 
-def _cv_run(task: str, model: str, audio: np.ndarray, whole: bool = False) -> np.ndarray:
+def _cv_run(task: str, model: str, audio: np.ndarray) -> np.ndarray:
+    # One pass: ClearVoice's own 4 s sliding window keeps memory flat and
+    # avoids the audible joins that crossfading separately generated pieces
+    # produced (generated high band doesn't line up between pieces).
     cv = _cv(task, model)
-
-    def run(seg: np.ndarray) -> np.ndarray:
-        with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "in.wav"
-            save_wav(seg, p)
-            with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings(), _silence():
-                warnings.simplefilter("ignore")
-                y = cv(input_path=str(p), online_write=False)
-        if isinstance(y, dict):
-            y = next(iter(y.values()))
-        return np.asarray(y, dtype=np.float32).reshape(-1)
-
-    if whole:
-        # One pass: ClearVoice's own 4 s sliding window keeps memory flat and
-        # avoids the audible joins that crossfading separately generated pieces
-        # produced (generated high band doesn't line up between pieces).
-        return _fit(run(audio), audio.size)
-    return chunked(run, audio, chunk_s=30.0, overlap_s=1.0)
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "in.wav"
+        save_wav(audio, p)
+        with _in_dir(CACHE / "clearvoice"), warnings.catch_warnings(), _silence():
+            warnings.simplefilter("ignore")
+            y = cv(input_path=str(p), online_write=False)
+    if isinstance(y, dict):
+        y = next(iter(y.values()))
+    return _fit(np.asarray(y, dtype=np.float32).reshape(-1), audio.size)
 
 
 def _need_clearvoice() -> None:
@@ -254,12 +244,6 @@ def _need_clearvoice() -> None:
         raise SystemExit("ClearerVoice isn't installed. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
                          "or skip the rebuild with --no-rebuild")
-
-
-def clearvoice(audio: np.ndarray) -> np.ndarray:
-    """MossFormer2 48 kHz speech enhancement (cleanup only)."""
-    _need_clearvoice()
-    return _cv_run("speech_enhancement", "MossFormer2_SE_48K", audio)
 
 
 _BAND_EDGE: dict = {}
@@ -341,7 +325,7 @@ def rebuild(audio: np.ndarray, above_hz: float | None = None) -> tuple[np.ndarra
     f_high = edge * 0.95 if above_hz is None else edge
     _BAND_EDGE["hz"] = f_high
     try:
-        y = _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio, whole=True)
+        y = _cv_run("speech_super_resolution", "MossFormer2_SR_48K", audio)
     finally:
         _BAND_EDGE.clear()
         voc.expected = 0
@@ -383,72 +367,14 @@ def _fmt_hz(hz: float) -> str:
     return f"{hz / 1000:.1f} kHz"
 
 
-# --- Apple AUSoundIsolation (macOS) ----------------------------------------------
-
-def apple_available() -> bool:
-    return sys.platform == "darwin" and shutil.which("xcrun") is not None
-
-
-def _apple_binary() -> Path:
-    src = resources.files("voice_enhance").joinpath("apple/SoundIsolation.swift")
-    binary = CACHE / f"soundisolation-{platform.machine()}"
-    src_path = Path(str(src))
-    if not binary.exists() or binary.stat().st_mtime < src_path.stat().st_mtime:
-        CACHE.mkdir(parents=True, exist_ok=True)
-        print("  compiling Apple SoundIsolation helper (one-off)...", file=sys.stderr)
-        proc = subprocess.run(["xcrun", "swiftc", "-O", str(src_path), "-o", str(binary)],
-                              capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"Swift compile failed:\n{proc.stderr}")
-    return binary
-
-
-def apple(audio: np.ndarray) -> np.ndarray:
-    if not apple_available():
-        raise SystemExit("The Apple backend needs macOS with Xcode command line tools (xcode-select --install).")
-    import soundfile as sf
-    binary = _apple_binary()
-    with tempfile.TemporaryDirectory() as td:
-        i, o = Path(td) / "in.wav", Path(td) / "out.wav"
-        save_wav(audio, i)
-        proc = subprocess.run([str(binary), str(i), str(o)], capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"AUSoundIsolation failed:\n{proc.stderr}")
-        y, sr = sf.read(str(o), dtype="float32", always_2d=True)
-    if sr != SR:
-        raise RuntimeError(f"Unexpected sample rate from AUSoundIsolation: {sr}")
-    return _fit(y.mean(axis=1), audio.size)
-
-
-def _resemble(mode):
-    def f(a):
-        from . import resemble
-        if not resemble.available():
-            raise SystemExit("Resemble Enhance isn't installed; reinstall with the command in the README.")
-        return resemble.run(a, mode)
-    return f
-
-
 DF_SETTINGS = {"max_reduction_db": None}  # set from --max-reduction
 
 
 BACKENDS = {
-    "resemble": _resemble("enhance"),
-    "resemble-denoise": _resemble("denoise"),
     "deepfilter": lambda a: deepfilter(a, atten_lim_db=DF_SETTINGS["max_reduction_db"]),
-    "clearvoice": lambda a: clearvoice(a),
-    "apple": lambda a: apple(a),
     "none": lambda a: a.copy(),
 }
 
 
 def available_backends() -> list[str]:
-    from . import resemble
-    names = ["none", "deepfilter"]
-    if resemble.available():
-        names += ["resemble", "resemble-denoise"]
-    if apple_available():
-        names.append("apple")
-    if clearvoice_available():
-        names.append("clearvoice")
-    return names
+    return list(BACKENDS)

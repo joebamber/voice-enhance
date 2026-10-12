@@ -24,8 +24,9 @@ from urllib.parse import unquote
 from . import __version__
 from . import cli
 from . import progress as prog
+from . import sidon
 from .audio import ENCODERS, SR, load, save_wav
-from .backends import available_backends, clearvoice_available
+from .backends import clearvoice_available
 from .guard import GuardSettings
 
 PAGE = Path(__file__).with_name("gui.html")
@@ -34,10 +35,9 @@ DIALOGS = Path(__file__).with_name("dialogs.js")
 # settings key (argparse dest) -> flag; only values that differ from the CLI defaults are passed
 FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "mix": "--mix",
          "gate": "--gate", "laughter_guard": "--laughter-guard", "dereverb": "--dereverb",
-         "tone": "--tone", "warmth": "--warmth", "presence": "--presence", "quality": "--quality",
-         "temperature": "--temperature", "lufs": "--lufs", "format": "-f"}
+         "tone": "--tone", "warmth": "--warmth", "presence": "--presence", "lufs": "--lufs", "format": "-f"}
 OFF_SWITCHES = {"rebuild": "--no-rebuild"}  # flag given when False
-ON_SWITCHES = {"denoise_first": "--denoise-first", "declip": "--declip"}  # flag given when True
+ON_SWITCHES = {"declip": "--declip", "studio": "--studio"}  # flag given when True
 DEFAULTS = {k: v for k, v in vars(cli.parser().parse_args([])).items() if k in FLAGS or k in OFF_SWITCHES or k in ON_SWITCHES}
 
 
@@ -146,7 +146,7 @@ class Session:
         argv = to_argv(settings)
         args = cli.parser().parse_args(argv)
         cli.configure(args)
-        rebuild_hf = args.rebuild and clearvoice_available()
+        rebuild_hf = cli.rebuild_wanted(args) and clearvoice_available()
         guard = GuardSettings(strength=args.laughter_guard)
         src, _ = self.files[fid]
         new_file = self.loaded != fid
@@ -296,8 +296,9 @@ def handler(session: Session, port: int, initial: Path | None):
             if path == "/":
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             if path == "/api/info":
-                return self._json({"version": __version__, "defaults": DEFAULTS, "backends": available_backends(),
-                                   "rebuild_available": clearvoice_available(), "formats": [e[1:] for e in ENCODERS],
+                return self._json({"version": __version__, "defaults": DEFAULTS,
+                                   "rebuild_available": clearvoice_available(),
+                                   "studio_available": sidon.available(), "formats": [e[1:] for e in ENCODERS],
                                    "initial": bool(initial)})
             if path == "/api/status":
                 return self._json(session.status)
