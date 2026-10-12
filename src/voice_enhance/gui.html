@@ -245,6 +245,8 @@
     <label>Loudness
       <select id="lufs"><option value="">Source level</option><option value="-16">−16 LUFS</option><option value="-19">−19 LUFS</option><option value="-23">−23 LUFS</option></select></label>
     <label>Format <select id="format"></select></label>
+    <label title="Process just a sample, starting at the playhead, to try settings quickly">Range
+      <select id="scope"><option value="">Whole file</option><option value="15">15 s sample</option><option value="30">30 s sample</option><option value="60">60 s sample</option></select></label>
     <button id="process" disabled title="Process the file with these settings (⌘↩)">Process</button>
     <button id="cancel" hidden title="Stop processing (Esc)">Cancel</button>
     <button class="primary" id="save" disabled>Save…</button>
@@ -338,14 +340,31 @@ function change(k, v) {
 
 const soundKey = s => JSON.stringify(Object.entries(s).filter(([k]) => k !== 'format').sort());
 let processed = null;  // soundKey of the settings last sent to Process, for this file
-const dirty = () => fileId != null && processed !== soundKey(settings);
+let processedSample = null;  // and the [start, length] it covered, null = the whole file
+
+// A sample starts at the playhead (or ends at the end of the file).
+const sampleLength = () => parseFloat($('#scope').value) || 0;
+function sampleHere() {
+  const n = sampleLength();
+  if (!n || duration() <= n) return null;
+  return [Math.round(Math.max(0, Math.min(pos(), duration() - n)) * 10) / 10, n];
+}
+// In sample mode, Process lights up again once the playhead leaves the processed sample.
+function rangeDone() {
+  const n = sampleLength();
+  if (!n || duration() <= n) return processedSample === null;
+  const p = pos();
+  return processedSample?.[1] === n && p >= processedSample[0] && p < processedSample[0] + n;
+}
+const dirty = () => fileId != null && (processed !== soundKey(settings) || !rangeDone());
 
 async function processFile() {
   if (locked || !dirty()) return;
   processed = soundKey(settings);
+  processedSample = sampleHere();
   pendingJob = Infinity;  // locked until the server says which render this started
   updateLock();
-  const r = await post('/api/apply', { settings, process: true });
+  const r = await post('/api/apply', { settings: { ...settings, _sample: processedSample }, process: true });
   pendingJob = r.job ?? null;
   updateLock();
 }
@@ -360,7 +379,7 @@ function updateLock() {
   if (locked && playing) pause();
   $('.player').classList.toggle('busy', locked);
   $('#settings').disabled = locked;
-  for (const id of ['#open', '#reset', '#lufs', '#format', '#copy']) $(id).disabled = locked;
+  for (const id of ['#open', '#reset', '#lufs', '#format', '#copy', '#scope']) $(id).disabled = locked;
   for (const b of $$('.ab button')) b.disabled = locked || (b.dataset.k === 'enh' && !buf.enh);
   $('#play').disabled = locked || !buf.orig;
   $('#save').disabled = locked || !buf.enh;
@@ -374,6 +393,7 @@ function updateLock() {
   msg.textContent = locked ? (buf.enh ? 'Rendering with the new settings. Everything unlocks when it\'s ready.'
                                       : 'Processing. Everything unlocks when it\'s ready.')
     : !d ? ''
+    : sampleLength() && duration() > sampleLength() ? `Press Process to process ${sampleLength()} s from ${fmtTime(sampleHere()[0])}.`
     : buf.enh ? 'Settings changed: press Process to hear them. Enhanced is still the previous version.'
     : 'Choose your settings, then press Process.';
   msg.hidden = !msg.textContent;
@@ -400,6 +420,7 @@ function bindControls() {
   }
   $('#lufs').addEventListener('change', e => change('lufs', e.target.value === '' ? null : parseFloat(e.target.value)));
   $('#format').addEventListener('change', e => change('format', e.target.value));
+  $('#scope').addEventListener('change', updateLock);
   $('#reset').addEventListener('click', () => { settings = { ...info.defaults }; change('backend', settings.backend); });
 }
 
@@ -539,7 +560,7 @@ async function loadOriginal(id) {
   pause(); p0 = 0;
   buf.orig = buf.enh = null;
   refreshPeaks();
-  processed = null;
+  processed = processedSample = null;
   listen('orig');  // nothing to hear on Enhanced until it's processed
   const b = await fetchBuffer(`/audio/original_${id}.wav`);
   if (id !== fileId) return;

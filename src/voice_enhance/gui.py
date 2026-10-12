@@ -21,6 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
+import numpy as np
+import soundfile as sf
+
 from . import __version__
 from . import cli
 from . import progress as prog
@@ -61,6 +64,13 @@ LABELS = {"-b": "noise", "--max-reduction": "maxred", "--laughter-guard": "laugh
           "--stupase-crossover": "xover", "--studio": "sidon"}
 
 
+def sample_of(settings: dict) -> tuple[float, float] | None:
+    """(start, length) in seconds when the page asked for just a sample, else None.
+    It rides along in the settings ("_sample"), so a different sample is a different render."""
+    s = settings.get("_sample")
+    return (float(s[0]), float(s[1])) if s else None
+
+
 def settings_label(settings: dict) -> str:
     """The settings that differ from the defaults, e.g. "noise-none xover4000 stupase", for file names."""
     argv = to_argv(settings)
@@ -73,7 +83,11 @@ def settings_label(settings: dict) -> str:
             words.append(LABELS.get(a, a.lstrip("-")))
         else:
             words[-1] += a if a.lstrip("-.").replace(".", "").isdigit() else f"-{a}"
-    return " ".join(words) or "defaults"
+    label = " ".join(words) or "defaults"
+    if sample := sample_of(settings):
+        m, sec = divmod(int(sample[0]), 60)
+        label += f" sample{m}m{sec:02d}s"
+    return label
 
 
 def job_key(job: tuple[int, dict]) -> tuple:
@@ -105,6 +119,7 @@ class Session:
         self.loaded: int | None = None
         self.rendered: int | None = None  # file id the latest render is of
         self.rendered_settings: dict = {}  # and the settings it used
+        self.sample_cache: tuple = (None, {})  # (sample, cache): like `cache`, for the current sample
         self.audio = None
         self.ref_lufs = float("nan")
         self.cache: dict = {}
@@ -235,12 +250,27 @@ class Session:
                                backend=args.backend):
                 if new_file:
                     self._load(fid)
-                y, note = cli.process(self.audio, args.backend, mix=1 - args.blend, guard=guard, cache=self.cache,
+                audio, cache, sample = self.audio, self.cache, sample_of(settings)
+                if sample:
+                    a = int(sample[0] * SR)
+                    audio = self.audio[a: a + int(sample[1] * SR)]
+                    if self.sample_cache[0] != (fid, sample):
+                        self.sample_cache = ((fid, sample), {})
+                    cache = self.sample_cache[1]
+                y, note = cli.process(audio, args.backend, mix=1 - args.blend, guard=guard, cache=cache,
                                       rebuild_hf=rebuild_hf, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip,
                                       protect_db=args.protect, rebuild_above=args.rebuild_above, gate_db=args.gate)
                 version = self.status["version"] + 1
                 dst = self.tmp / f"enhanced_{version}.wav"
                 result = cli.render(y, dst, args, self.ref_lufs)
+                if sample:
+                    # back in place at full length, silent elsewhere, so A/B lines up with the original
+                    y, sub = sf.read(dst, dtype="float32")[0], sf.info(dst).subtype
+                    full = np.zeros((self.audio.size,) + y.shape[1:], dtype=np.float32)
+                    full[a: a + len(y)] = y[: len(full) - a]
+                    sf.write(dst, full, SR, subtype=sub)
+                    m, sec = divmod(int(sample[0]), 60)
+                    note += f"  · sample: {sample[1]:g} s from {m}:{sec:02d}"
         finally:
             prog.listener = None
         self.renders.append(dst)
@@ -267,6 +297,11 @@ class Session:
         if dst.suffix.lower() not in ENCODERS:
             dst = dst.with_name(dst.name + ext)
         rendered = self.tmp / f"enhanced_{version}.wav"
+        if sample := sample_of(self.rendered_settings):  # just the sample, not the silence around it
+            y, sub = sf.read(rendered, dtype="float32")[0], sf.info(rendered).subtype
+            a = int(sample[0] * SR)
+            rendered = self.tmp / f"sample_{version}.wav"
+            sf.write(rendered, y[a: a + int(sample[1] * SR)], SR, subtype=sub)
         if dst.suffix.lower() == ".wav":
             shutil.copyfile(rendered, dst)
         else:
