@@ -35,7 +35,7 @@ DIALOGS = Path(__file__).with_name("dialogs.js")
 # settings key (argparse dest) -> flag; only values that differ from the CLI defaults are passed
 FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "mix": "--mix",
          "gate": "--gate", "laughter_guard": "--laughter-guard", "dereverb": "--dereverb",
-         "tone": "--tone", "warmth": "--warmth", "presence": "--presence", "lufs": "--lufs", "format": "-f"}
+         "lufs": "--lufs", "format": "-f"}
 OFF_SWITCHES = {"rebuild": "--no-rebuild"}  # flag given when False
 ON_SWITCHES = {"declip": "--declip", "studio": "--studio"}  # flag given when True
 DEFAULTS = {k: v for k, v in vars(cli.parser().parse_args([])).items() if k in FLAGS or k in OFF_SWITCHES or k in ON_SWITCHES}

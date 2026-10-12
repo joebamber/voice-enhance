@@ -38,12 +38,12 @@ Opens the app in your browser. It runs on your Mac like the command line. Drop a
 | `--no-rebuild` | Skips the rebuild. | Rebuild on |
 | `--rebuild-above 8000` | Forces the rebuild to regenerate everything above that frequency, even on full-band audio. | Auto-detected |
 | `--dereverb 0.5` | Adds DSP reverb-tail suppression on top of the AI. | 0 (off) |
-| `--studio` | Finishes by re-synthesising the voice with [Sidon](https://huggingface.co/sarulab-speech/sidon-v0.1) so it sounds like a close, high-quality podcast mic. It's the last step: everything else (cleanup, gate, tone, polish) runs first, and only the output level is set after it. It hears the voice up to 8 kHz and generates the rest, so it replaces the rebuild. About 6 minutes per hour of audio. Add `-b none` to give it the voice without AI noise removal. | Off |
+| `--studio` | Finishes by re-synthesising the voice with [Sidon](https://huggingface.co/sarulab-speech/sidon-v0.1) so it sounds like a close, high-quality podcast mic. It's the last step: everything else (cleanup, gate, polish) runs first, and only the output level is set after it. It hears the voice up to 8 kHz and generates the rest, so it replaces the rebuild. About 6 minutes per hour of audio. Add `-b none` to give it the voice without AI noise removal. | Off |
 | `--declip` | Repairs clipped (flat-topped) peaks before cleanup. | Off |
 | `--protect 22` | Turns on speech protection: speech this far above the room noise comes from the original, noise and all, so the AI can't duck loud syllables. Use it if loud words dip in level. Higher values let the AI process more. | 0 (off) |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. | No cap |
 | `--gate 40` | Sets the background gate: anything this many dB below the main speaker is silenced, e.g. faint voices in the background, which the AI keeps because they're speech. Higher keeps quieter sounds; 0 turns it off. | 30 dB |
-| `voice-enhance ep.wav --compare` | Renders DeepFilterNet with the neutral and warm tones, and without the laughter guard, into `ep_compare/`, all at the source level, for A/B listening. | |
+| `voice-enhance ep.wav --compare` | Renders DeepFilterNet with and without the laughter guard into `ep_compare/`, all at the source level, for A/B listening. | |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. | Next to the input |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format. | 24-bit WAV |
 | `--lufs -16` | Opt-in loudness normalisation plus a true-peak limiter. | Off |
@@ -51,10 +51,6 @@ Opens the app in your browser. It runs on your Mac like the command line. Drop a
 | `-b none` | Skips the AI noise removal (and the gate and laughter guard that go with it). | `deepfilter` |
 | `--laughter-guard 0.5` | Sets how much laughter to protect from the cleanup (0 = off). | 0.85 |
 | `-v` | Lists the timestamps where the laughter guard kicked in. | Off |
-| `--warmth -8` (with `--tone warm`) | Sets the low end: lower is less boomy (0 = Adobe's full low end). | -4 dB |
-| `--presence 8` (with `--tone warm`) | Sets clarity: lifts 3-8 kHz. | +5 dB |
-| `--tone warm` | EQs toward Adobe's measured tone: adds body to a thin mic, but on a mic that's already good it lifts room boom and hiss (up to +20 dB of treble). | `neutral` |
-| `--tone ref.wav` | Matches the tone of a recording you like. | `neutral` |
 | `--mix 0.9` | Leaves 10% of the original signal in. | 1.0 |
 | `--no-polish` | Cleanup and loudness only: no EQ, de-essing or compression. | Polish on |
 | `--list-backends` | Lists the noise-removal options (`deepfilter`, `none`). | |
@@ -76,7 +72,7 @@ By default DeepFilterNet removes as much noise as it can, and the background gat
 
 The laughter guard (`--laughter-guard`) also lets a little noise through around laughs, so lower it if you hear noise come and go there.
 
-`--compare` only compares tones and the laughter guard, so to hear these settings side by side, render a few variants of a short clip:
+`--compare` only compares the laughter guard, so to hear these settings side by side, render a few variants of a short clip:
 
 ```
 voice-enhance clip.wav -o clip_mr12.wav --max-reduction 12 --gate 0

@@ -197,7 +197,7 @@
       <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="ai" title="A DeepFilterNet setting. Changing this re-runs it.">✦ AI</span></label><output></output>
         <input type="range" min="3" max="40" step="1">
         <small>Caps how far any sound is pushed down. Lower leaves natural room tone in the pauses (turn the gate off to hear it).</small></div>
-      <label class="ctl" data-key="mix"><span class="name">Mix</span><output></output>
+      <label class="ctl" data-key="mix" data-show="deepfilter"><span class="name">Mix</span><output></output>
         <input type="range" min="0" max="1" step="0.05">
         <small>Below 100% blends the original (noise included) back in.</small></label>
       <div class="ctl" data-key="protect" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Protect loud speech</label><output></output>
@@ -219,15 +219,7 @@
     </section>
 
     <section class="card">
-      <h2>Tone &amp; repair</h2>
-      <div class="ctl" data-key="tone"><label class="name"><input type="checkbox" class="sw">Warm tone</label><span></span>
-        <small>EQ toward Adobe's tone: adds body to a thin mic, but lifts boom and hiss on a good one. Off keeps the recording's own tone.</small></div>
-      <label class="ctl" data-key="warmth" data-tone="warm"><span class="name">Warmth</span><output></output>
-        <input type="range" min="-12" max="6" step="1">
-        <small>Low end. Lower is less boomy.</small></label>
-      <label class="ctl" data-key="presence" data-tone="warm"><span class="name">Presence</span><output></output>
-        <input type="range" min="0" max="12" step="1">
-        <small>Clarity: lifts 3–8 kHz.</small></label>
+      <h2>Repair</h2>
       <div class="ctl" data-key="rebuild"><label class="name"><input type="checkbox" class="sw">Rebuild high frequencies<span class="ai" title="MossFormer2, a neural network, generates the missing treble.">✦ AI</span></label><span></span>
         <small id="rebuild-hint">Only acts on band-limited recordings (phone, Zoom): regenerates the treble missing below 12 kHz. Slow on long files.</small></div>
       <div class="ctl" data-key="declip"><label class="name"><input type="checkbox" class="sw">Repair clipped peaks<span class="slow" title="Repairs before the AI cleanup, so changing it re-runs that">re-runs AI</span></label><span></span>
@@ -265,12 +257,10 @@ const post = (url, body, headers = {}) => fetch(url, {
   body: body instanceof Blob ? body : JSON.stringify(body || {}),
 }).then(r => r.json());
 
-const db = v => `${v > 0 ? '+' : ''}${v} dB`;
 // Settings with an off state get a switch (off: the value the CLI treats as off; on: where the
 // slider starts when switched on, unless it was on before or is on by default).
 const SPECS = {
   backend: { off: 'none', on: 'deepfilter' },  // -b deepfilter / -b none
-  tone: { off: 'neutral', on: 'warm' },
   rebuild: { off: false, on: true },
   declip: { off: false, on: true },
   studio: { off: false, on: true },
@@ -280,8 +270,6 @@ const SPECS = {
   gate: { fmt: v => `${v} dB`, off: 0, on: 30 },
   laughter_guard: { fmt: v => v.toFixed(2), off: 0, on: 0.85 },
   dereverb: { fmt: v => v.toFixed(2), off: 0, on: 0.5 },
-  warmth: { fmt: db },
-  presence: { fmt: db },
 };
 
 let info, settings, status = {}, fileId = null, version = 0;
@@ -304,7 +292,6 @@ function syncControls() {
       el.classList.toggle('disabled', !ok);
       for (const i of $$('input,select', el)) i.disabled = !ok;
     }
-    if (el.dataset.tone) el.classList.toggle('hidden', settings.tone !== el.dataset.tone);
   }
   $('#lufs').value = settings.lufs == null ? '' : String(settings.lufs);
   $('#format').value = settings.format;

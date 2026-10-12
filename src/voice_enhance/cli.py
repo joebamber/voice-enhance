@@ -20,7 +20,6 @@ from .dereverb import dereverb
 from .protect import protect
 from .gate import gate
 from .guard import GuardSettings, apply_guard
-from .tone import PROFILES, LOW_SPLIT_HZ, apply_eq, apply_eq_voice_only_lows, correction, target_from, with_presence
 
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus",
               ".caf", ".mov", ".mp4", ".mkv", ".webm"}
@@ -129,13 +128,7 @@ def rebuild_wanted(args) -> bool:
     return args.rebuild and not args.studio
 
 
-def is_toned(args, tone: str | None = None) -> bool:
-    tone = tone or args.tone
-    return not (args.no_polish or tone == "neutral" or args.tone_amount == 0)
-
-
-def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool,
-               tone: str | None = None) -> list[str]:
+def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool) -> list[str]:
     st = ["decode"] if decode else []
     if args.declip:
         st.append("declip")
@@ -146,8 +139,6 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
         st.append("dereverb")
     if rebuild_hf:
         st.append("rebuild")
-    if is_toned(args, tone):
-        st.append("tone")
     return st + ["polish"] + (["studio"] if args.studio else []) + ["loudness"]
 
 
@@ -155,31 +146,12 @@ def short(name: str, n: int = 28) -> str:
     return name if len(name) <= n else name[: n - 1] + "…"
 
 
-def render(audio: np.ndarray, dst: Path, args, ref_lufs: float, tone: str | None = None) -> str:
-    toned = is_toned(args, tone)
-    target = args._targets[tone or args.tone] if toned else None
-    if toned:
-        prog.stage("tone")
-        curve = correction(audio, target, args.tone_amount)
-        audio = apply_eq_voice_only_lows(audio, curve)
+def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
     with tempfile.TemporaryDirectory() as td:
         a, b = Path(td) / "a.wav", Path(td) / "b.wav"
         save_wav(audio, a)
         prog.stage("polish")
-        polish_stage(a, b, polish=not args.no_polish, toned=toned)
-        if toned:
-            # Compression reacts to the extra low end and shifts the balance a
-            # little, so measure the polished result and trim once more.
-            polished = load(b)
-            trim = correction(polished, target, args.tone_amount)
-            # low end is handled per phrase above; only trim the mids/highs here
-            trim = [(f, max(-6.0, min(6.0, g)) if f >= LOW_SPLIT_HZ else 0.0) for f, g in trim]
-            save_wav(apply_eq(polished, trim), b)
-            if args.verbose:
-                total = {f: g for f, g in curve}
-                for f, g in trim:
-                    total[f] += g
-                log("    tone: " + " ".join(f"{f}:{g:+.0f}" for f, g in total.items() if abs(g) >= 1))
+        polish_stage(a, b, polish=not args.no_polish)
         if args.studio:
             # last of all, on the finished voice; only the level is set after it
             from . import sidon
@@ -235,7 +207,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
                     help="extra DSP tail suppression after the AI (default 0 = off; the AI handles reverb)")
     ap.add_argument("--compare", action="store_true",
-                    help="render DeepFilterNet with the neutral and warm tones and without the laughter guard "
+                    help="render DeepFilterNet with and without the laughter guard "
                          "into <name>_compare/ for A/B listening")
     ap.add_argument("-f", "--format", default="wav", help="output format: wav, flac, m4a, mp3, aiff (default wav)")
     ap.add_argument("--lufs", type=float, default=None,
@@ -245,16 +217,6 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
     ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
                     help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
-    ap.add_argument("--tone", default="neutral",
-                    help="tone target: 'neutral' (default: keeps the recording's own tone), 'warm' (EQ toward Adobe's "
-                         "measured tone, adds the body a thin mic lacks but also lifts room boom and hiss), "
-                         "or a path to a reference recording whose sound you want to match")
-    ap.add_argument("--tone-amount", type=float, default=1.0, metavar="0-1",
-                    help="how far to move toward the tone target (default 1.0)")
-    ap.add_argument("--presence", type=float, default=5.0, metavar="dB",
-                    help="clarity: lift 3-8 kHz relative to the tone target (default +5; 0 = exactly the target)")
-    ap.add_argument("--warmth", type=float, default=-4.0, metavar="dB",
-                    help="low end relative to the tone target: lower = less boom (default -4; 0 = Adobe's full low end)")
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
     ap.add_argument("--list-backends", action="store_true", help="list the noise-removal options")
@@ -268,15 +230,6 @@ def configure(args) -> None:
     """Check the settings and apply the ones the engines read globally."""
     if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1:
         raise SystemExit("--mix and --laughter-guard must be between 0 and 1")
-    if not 0 <= args.tone_amount <= 1:
-        raise SystemExit("--tone-amount must be between 0 and 1")
-    if args.tone != "neutral":
-        if args.tone not in PROFILES and not Path(args.tone).expanduser().exists():
-            raise SystemExit(f"--tone must be warm, neutral, or an existing reference file (got {args.tone})")
-        args._targets = {args.tone: with_presence(target_from(args.tone), args.presence, args.warmth)}
-    else:
-        args._targets = {}
-    args._targets.setdefault("warm", with_presence(target_from("warm"), args.presence, args.warmth))
     from . import backends as _b
     _b.DF_SETTINGS["max_reduction_db"] = args.max_reduction
     from . import sidon
@@ -345,17 +298,16 @@ def main(argv: list[str] | None = None) -> None:
                     loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
                 else:
                     level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
-            variants = [("deepfilter_neutral", "deepfilter", guard, "neutral"),  # the default
-                        ("deepfilter_warm", "deepfilter", guard, "warm"),
-                        ("deepfilter_no-guard", "deepfilter", None, "warm")]
-            for n, (label, b, g, tone) in enumerate(variants, start=1):
+            variants = [("deepfilter", "deepfilter", guard),  # the default
+                        ("deepfilter_no-guard", "deepfilter", None)]
+            for n, (label, b, g) in enumerate(variants, start=1):
                 with prog.progress(short(f"{n}_{label}", 30),
-                                   stages_for(args, b, g, rebuild_wanted(args), decode=False, tone=tone), backend=b):
+                                   stages_for(args, b, g, rebuild_wanted(args), decode=False), backend=b):
                     y, note = process(audio, b, mix=args.mix, guard=g, cache=cache,
                                       verbose=args.verbose, rebuild_hf=rebuild_wanted(args), dry=args.dereverb,
                                       repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
                                       gate_db=args.gate)
-                    result = render(y, folder / f"{n}_{label}{fmt}", args, ref, tone=tone)
+                    result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
                 log(f"  -> {result}")
                 log(f"     {note}")
             log(f"  compare set in {folder}")

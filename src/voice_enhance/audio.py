@@ -65,10 +65,9 @@ def save_wav(audio: np.ndarray, path: Path) -> None:
 WORK_LUFS = -20.0
 
 
-def polish_filters(toned: bool) -> list[str]:
+def polish_filters() -> list[str]:
     return [
-        # sub-rumble only when the tone curve is shaping the low end, otherwise a normal voice high-pass
-        "highpass=f=50:poles=2" if toned else "highpass=f=70:poles=2",
+        "highpass=f=70:poles=2",
         # No de-esser: it took ~9 dB off every "s" and made speakers sound lispy.
         # No compression: dynamics are left to the editor, and compressing
         # lifts the room tails between words (measured: ~3.5 dB more reverb).
@@ -90,12 +89,12 @@ def _render(src: Path, dst: Path, filters: list[str], codec: list[str]) -> None:
           "-ar", str(SR), "-ac", "1", *codec, str(dst)])
 
 
-def polish_stage(src: Path, dst: Path, *, polish: bool, toned: bool = False) -> None:
+def polish_stage(src: Path, dst: Path, *, polish: bool) -> None:
     """Bring to working loudness, then (optionally) high-pass, de-ess and level."""
     m1 = measure(src)["lufs"]
     if not np.isfinite(m1):
         raise RuntimeError("Audio is silent after cleanup")
-    _render(src, dst, [f"volume={WORK_LUFS - m1:.2f}dB"] + (polish_filters(toned) if polish else []),
+    _render(src, dst, [f"volume={WORK_LUFS - m1:.2f}dB"] + (polish_filters() if polish else []),
             ["-c:a", "pcm_f32le"])
 
 
