@@ -6,9 +6,10 @@ vocoder that builds 48 kHz audio from them. It only hears up to 8 kHz (16 kHz
 input) and generates everything above, so it replaces the rebuild step.
 
 It runs last, on the finished voice. Its output is a new waveform, not a filtered
-copy (waveform correlation with the input ~0.1), so a wet/dry blend would
-comb-filter. Its pitch and harmonics are what sound synthetic, so by default
-only its top end is used: the real voice below a crossover, Sidon above it.
+copy (waveform correlation with the input ~0.1), so it can't be blended with the
+original: a wet/dry mix comb-filters, and crossovers that kept the real voice
+below 600 Hz-8 kHz either changed nothing or kept the wobble. Experimental: its
+pitch and harmonics can sound synthetic.
 Weights (~1.2 GB) come from Hugging Face on first use; CPU runs at ~10x real time.
 """
 
@@ -22,7 +23,12 @@ import numpy as np
 from .audio import SR
 
 REPO = "sarulab-speech/sidon-v0.1"
-CHUNK_S = 96  # the demo's chunk length; features carry over between chunks
+# The demo uses 96 s chunks, but w2v-BERT's attention memory grows with the square
+# of the chunk length: 96 s peaked at ~17 GB. Each chunk also sees CONTEXT_S of the
+# audio before it (features dropped afterwards) so the joins don't start cold.
+CHUNK_S = 20
+CONTEXT_S = 2
+FPS = 50  # feature frames per second (hop 160 at 16 kHz, stacked in pairs)
 
 
 def available() -> bool:
@@ -43,9 +49,7 @@ def _load():
     return pre, fe, dec
 
 
-# the real voice below these frequencies, Sidon above; 'strong' is all Sidon
-CROSSOVER_HZ = {"subtle": 8000.0, "medium": 4000.0}
-_last: dict = {}  # one-entry cache: moving the crossover in the app doesn't re-run the model
+_last: dict = {}  # one-entry cache: changing only the output level in the app doesn't re-run the model
 
 
 def run(audio: np.ndarray) -> np.ndarray:
@@ -72,20 +76,26 @@ def _synthesise(audio: np.ndarray) -> np.ndarray:
     x = AF.highpass_biquad(x, SR, 50)
     x = AF.resample(x, SR, 16_000).view(-1)
     x = torch.nn.functional.pad(0.9 * x / x.abs().max(), (0, 24_000))
-    chunks = x.split(16_000 * CHUNK_S)
+    step, ctx = 16_000 * CHUNK_S, 16_000 * CONTEXT_S
+    starts = range(0, x.numel(), step)
     out, cache = [], None
     with torch.inference_mode():
-        for i, chunk in enumerate(chunks):
+        for i, s in enumerate(starts):
+            c = min(ctx, s)  # whole seconds, so it maps to exactly c // 320 frames
+            chunk = x[s - c: s + step]
             feats = pre(torch.nn.functional.pad(chunk, (160, 160)).numpy(), sampling_rate=16_000,
                         return_tensors="pt")["input_features"]
-            f = fe(feats)["last_hidden_state"]
+            f = fe(feats)["last_hidden_state"][:, c * FPS // 16_000:]
             if cache is not None:
                 f = torch.cat([cache, f], dim=1)
             out.append(dec(f.transpose(1, 2)).view(-1)[:-960])
             cache = f[:, -1:]
-            progress.fraction((i + 1) / len(chunks))
+            progress.fraction((i + 1) / len(starts))
     y = torch.cat(out).numpy()
     y = np.pad(y, (0, max(0, audio.size - y.size)))[: audio.size].astype(np.float32)
+    # its output sits on a small DC offset, which in gated silence is a near-constant signal
+    from scipy.signal import butter, sosfiltfilt
+    y = sosfiltfilt(butter(2, 20, "high", fs=SR, output="sos"), y).astype(np.float32)
     y = np.roll(y, -_lag(audio, y))
     rms_in, rms_out = np.sqrt(np.mean(audio ** 2)), np.sqrt(np.mean(y ** 2))
     return y * (rms_in / rms_out) if rms_out > 0 else y
@@ -93,26 +103,29 @@ def _synthesise(audio: np.ndarray) -> np.ndarray:
 
 def _lag(x: np.ndarray, y: np.ndarray, max_ms: float = 50.0) -> int:
     """How many samples late y is (Sidon's output runs ~8 ms behind). Its phase is
-    unrelated to the input, so this matches the 1-6 kHz envelopes (syllable timing)."""
-    from scipy.signal import butter, correlate, sosfiltfilt
-    band = butter(4, [1000, 6000], "band", fs=SR, output="sos")
-    smooth = butter(2, 200, "low", fs=SR, output="sos")
+    unrelated to the input, so this matches the 1-6 kHz envelopes (syllable timing).
+    The envelopes are built at 16 kHz and compared at 2 kHz, and only lags within
+    max_ms are tried: a full-rate FFT correlation of a long file took several GB."""
+    from scipy.signal import butter, resample_poly, sosfiltfilt
+    sr, down = 16_000, 8
+    band = butter(4, [1000, 6000], "band", fs=sr, output="sos")
+    smooth = butter(4, 200, "low", fs=sr, output="sos")
 
     def env(a):
-        e = sosfiltfilt(smooth, np.abs(sosfiltfilt(band, a)))
-        return e - e.mean()
+        e = sosfiltfilt(smooth, np.abs(sosfiltfilt(band, resample_poly(a, 1, SR // sr))))[::down]
+        return (e - e.mean()).astype(np.float32)
 
-    c = correlate(env(y), env(x), mode="full", method="fft")
-    lags = np.arange(-x.size + 1, y.size)
-    win = np.abs(lags) <= int(SR * max_ms / 1000)
-    return int(lags[win][np.argmax(c[win])])
+    ex, ey = env(x), env(y)
+    rate = sr // down
+    m = int(rate * max_ms / 1000)
+    n = min(ex.size, ey.size) - 2 * m
+    if n <= 0:
+        return 0
+    c =np.array([np.dot(ey[m + k: m + k + n], ex[m: m + n]) for k in range(-m, m + 1)])
+    i = int(np.argmax(c))
+    frac = 0.0
+    if 0 < i < c.size - 1:  # parabolic peak, for finer than 0.5 ms
+        d = c[i - 1] - 2 * c[i] + c[i + 1]
+        frac = 0.5 * (c[i - 1] - c[i + 1]) / d if d else 0.0
+    return int(round((i - m + frac) * SR / rate))
 
-
-def split(voice: np.ndarray, studio: np.ndarray, above_hz: float) -> np.ndarray:
-    """The real voice below above_hz, Sidon's above. Zero-phase Butterworth pair:
-    power-complementary, so with Sidon's phase unrelated to the input the two
-    halves sum flat across the crossover."""
-    from scipy.signal import butter, sosfiltfilt
-    lo = sosfiltfilt(butter(4, above_hz, "low", fs=SR, output="sos"), voice)
-    hi = sosfiltfilt(butter(4, above_hz, "high", fs=SR, output="sos"), studio)
-    return (lo + hi).astype(np.float32)

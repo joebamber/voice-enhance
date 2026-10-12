@@ -84,8 +84,15 @@ ENCODERS = {
 }
 
 
+def _input(path: Path) -> list[str]:
+    """Name the format for our own WAVs: near-constant float data (Sidon's output in
+    gated silence) can repeat byte 0x47 often enough that ffmpeg's probe takes the
+    file for an MPEG-TS stream and ignores the WAV header."""
+    return (["-f", "wav"] if path.suffix.lower() == ".wav" else []) + ["-i", str(path)]
+
+
 def _render(src: Path, dst: Path, filters: list[str], codec: list[str]) -> None:
-    _run(["ffmpeg", "-nostdin", "-hide_banner", "-y", "-i", str(src), "-af", ",".join(filters),
+    _run(["ffmpeg", "-nostdin", "-hide_banner", "-y", *_input(src), "-af", ",".join(filters),
           "-ar", str(SR), "-ac", "1", *codec, str(dst)])
 
 
@@ -150,7 +157,7 @@ def loudness_stage(src: Path, dst: Path, *, lufs: float, tp: float) -> None:
 
 def measure(path: Path) -> dict:
     """Integrated loudness / true peak of a finished file (for reporting)."""
-    proc = _run(["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path), "-af",
+    proc = _run(["ffmpeg", "-nostdin", "-hide_banner", *_input(path), "-af",
                  "ebur128=peak=true", "-f", "null", "-"])
     tail = proc.stderr[proc.stderr.rfind("Summary:"):]
     i = re.search(r"I:\s+(-?[\d.]+|-inf) LUFS", tail)

@@ -224,11 +224,8 @@
         <small id="rebuild-hint">Only acts on band-limited recordings (phone, Zoom): regenerates the treble missing below 12 kHz. Slow on long files.</small></div>
       <div class="ctl" data-key="declip"><label class="name"><input type="checkbox" class="sw">Repair clipped peaks<span class="slow" title="Repairs before the AI cleanup, so changing it re-runs that">re-runs AI</span></label><span></span>
         <small>Rounds off peaks that hit the recorder's ceiling (flat-topped waveform).</small></div>
-      <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="Sidon, a neural network, re-synthesises the voice.">✦ AI</span></label><span></span>
-        <small id="studio-hint">The last step: Sidon's AI re-synthesises the finished voice as if recorded close on a high-quality mic. About 6 minutes per hour of audio, re-run on every change. Turn AI noise removal off to give it the voice without it.</small></div>
-      <label class="ctl" data-key="studio_strength" data-studio><span class="name">Studio strength</span>
-        <select><option value="subtle">Subtle</option><option value="medium">Medium</option><option value="strong">Strong</option></select>
-        <small>Subtle keeps your real voice and adds Sidon's close-mic air above 8 kHz; Medium uses Sidon from 4 kHz. Strong is all Sidon: the biggest change, but it can sound synthetic.</small></label>
+      <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="Sidon, a neural network, re-synthesises the voice.">✦ AI</span><span class="slow" title="Early-stage model: it can wobble or sound synthetic.">experimental</span></label><span></span>
+        <small id="studio-hint">The last step: Sidon's AI re-synthesises the finished voice as if recorded close on a high-quality mic. It can wobble or sound synthetic. About 6 minutes per hour of audio, re-run on every change. Turn AI noise removal off to give it the voice without it.</small></div>
     </section>
 
   </div>
@@ -290,7 +287,6 @@ function syncControls() {
     if (range && on) { range.value = v; $('output', el).textContent = (spec.fmt || String)(v); }
     if (sel) sel.value = typeof v === 'boolean' ? (v ? '1' : '0') : v;
     if (box) box.checked = !!v;
-    if (el.dataset.studio != null) el.classList.toggle('hidden', !settings.studio);
     if (el.dataset.show) {
       const ok = el.dataset.show.split(' ').includes(settings.backend);
       el.classList.toggle('disabled', !ok);
