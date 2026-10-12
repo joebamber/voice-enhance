@@ -45,3 +45,25 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 | `--list-backends` | Shows which cleanup engines are installed. | |
 | `VOICE_ENHANCE_DEVICE=cpu voice-enhance ...` | Runs the ClearerVoice models on the CPU instead of the Apple Silicon GPU. | Apple Silicon GPU |
 | `./scripts/try-rebuild.sh` | Installs, then runs `--compare` on the clips in `out/` (not in the repo). | |
+
+## Tuning the background noise
+
+By default DeepFilterNet removes as much noise as it can, down to near silence in the pauses. These dial it up or down:
+
+| To get… | Use | How it works |
+|---|---|---|
+| **Less** noise removal, natural room tone in the pauses | `--max-reduction 12` | Caps how far any sound is pushed down, in dB. Lower values leave more room tone. Also avoids watery or warbly artefacts on hard material. |
+| **Less** noise removal, everywhere | `--mix 0.8` | Blends 20% of the original (noise included) back in. Lower values bring back more of the noise. |
+| **More** noise removal under loud speech | `--protect 30` (or `--protect 0`) | Speech more than this many dB above the room noise comes from the original, noise and all, because there the voice masks it. Raising it hands more of the speech to the AI; 0 hands it all over, but the AI may then duck loud syllables. Lower (e.g. `--protect 15`) keeps more of the original voice. |
+| **More** room echo removed | `--dereverb 0.5` | Adds DSP reverb-tail suppression after the AI (0–1). |
+| **Much more** cleanup (echo and noise) | `-b resemble --denoise-first` | Generative re-synthesis. Strongest, but slow and can sound robotic. |
+| No noise removal at all | `-b none` | Keeps declip, rebuild and EQ only. |
+
+The laughter guard (`--laughter-guard`) also lets a little noise through around laughs, so lower it if you hear noise come and go there.
+
+`--compare` only compares engines, so to hear these settings side by side, render a few variants of a short clip:
+
+```
+voice-enhance clip.wav -o clip_mr12.wav --max-reduction 12
+voice-enhance clip.wav -o clip_mix80.wav --mix 0.8
+```
