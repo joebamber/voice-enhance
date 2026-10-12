@@ -87,6 +87,10 @@ class NewFile(Exception):
     """A different file was opened while this one was processing."""
 
 
+class Cancelled(Exception):
+    """The page's Cancel button was pressed."""
+
+
 class Session:
     def __init__(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="voice-enhance-gui-"))
@@ -94,6 +98,8 @@ class Session:
         self.wanted: tuple[int, dict | None] | None = None  # (file id, settings) to render next; None = just load it
         self.running: tuple | None = None  # job_key of the render in progress
         self.done: tuple | None = None  # job_key of the last finished render
+        self.go = False  # `wanted` is waiting to be run
+        self.cancelling = False
         self.files: dict[int, tuple[Path, Path | None]] = {}  # id -> (source, folder to save next to, None if uploaded)
         self.next_id = 1
         self.loaded: int | None = None
@@ -106,7 +112,7 @@ class Session:
         self.dialogs = Dialogs()
         self.status = {"file": None, "file_id": None, "state": "empty", "stage": "", "pct": 0.0, "note": "",
                        "result": "", "error": "", "version": 0, "command": "", "duration": 0.0,
-                       "queued": 0, "finished": 0}  # job numbers, so the page knows when its change is done
+                       "queued": 0, "finished": 0, "cancellable": False}  # job numbers, so the page knows when its change is done
         threading.Thread(target=self._worker, daemon=True).start()
 
     # --- requests from the page ---------------------------------------------
@@ -120,7 +126,7 @@ class Session:
             self.status.update(file=path.name, file_id=None, state="working", stage="reading", pct=0.0,
                                error="", note="", result="", queued=self.status["queued"] + 1,
                                command=self._command(fid, settings or dict(DEFAULTS)))
-            self.wanted = (fid, None)
+            self.wanted, self.go = (fid, None), True
             self.cond.notify()
 
     def apply(self, settings: dict, process: bool = True) -> int | None:
@@ -136,8 +142,16 @@ class Session:
             if job_key(self.wanted) == (self.running or self.done):
                 return None
             self.status.update(state="working", stage="queued", pct=0.0, error="", queued=self.status["queued"] + 1)
+            self.go = True
             self.cond.notify()
             return self.status["queued"]
+
+    def cancel(self) -> None:
+        """Stops the render in progress (at its next progress tick) and drops any queued one.
+        The last finished render stays playable."""
+        with self.cond:
+            if self.running is not None and self.running[1] is not None:  # loading a file can't be cancelled
+                self.cancelling, self.go = True, False
 
     def _command(self, fid: int, settings: dict) -> str:
         src = self.files[fid][0]
@@ -149,9 +163,11 @@ class Session:
     def _worker(self) -> None:
         while True:
             with self.cond:
-                while self.wanted is None or job_key(self.wanted) == self.done:
+                while not self.go:
                     self.cond.wait()
+                self.go, self.cancelling = False, False
                 job = (self.wanted[0], self.wanted[1] and dict(self.wanted[1]))
+                self.status["cancellable"] = job[1] is not None
                 n = self.status["queued"]
                 self.running = job_key(job)
             try:
@@ -161,6 +177,13 @@ class Session:
                     self._run(*job)
             except NewFile:
                 continue
+            except Cancelled:
+                with self.cond:
+                    self.cancelling, self.running = False, None
+                    # queued jobs were dropped too, so they all count as finished
+                    self.status.update(state="cancelled", stage="", pct=0.0, finished=self.status["queued"],
+                                       cancellable=False)
+                continue
             except BaseException as e:  # SystemExit from bad settings included
                 if not isinstance(e, SystemExit):
                     traceback.print_exc()
@@ -168,12 +191,14 @@ class Session:
                 self.status.update(state="error", error=msg)
             with self.cond:
                 self.done, self.running = job_key(job), None
-                self.status["finished"] = n
+                self.status.update(finished=n, cancellable=False)
 
     def _progress(self, fid: int):
         def on_move(label: str, frac: float) -> None:
             if self.wanted and self.wanted[0] != fid:
                 raise NewFile()
+            if self.cancelling:
+                raise Cancelled()
             self.status.update(stage=label, pct=frac)
         return on_move
 
@@ -392,6 +417,9 @@ def handler(session: Session, port: int, initial: Path | None):
             if path == "/api/apply":
                 body = self._body()
                 return self._json({"job": session.apply(body["settings"], body.get("process", True))})
+            if path == "/api/cancel":
+                session.cancel()
+                return self._json({"ok": True})
             if path == "/api/save":
                 return self._json(session.save(self._body().get("format", "wav")))
             if path == "/api/reveal":

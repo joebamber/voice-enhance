@@ -246,6 +246,7 @@
       <select id="lufs"><option value="">Source level</option><option value="-16">−16 LUFS</option><option value="-19">−19 LUFS</option><option value="-23">−23 LUFS</option></select></label>
     <label>Format <select id="format"></select></label>
     <button id="process" disabled title="Process the file with these settings (⌘↩)">Process</button>
+    <button id="cancel" hidden title="Stop processing (Esc)">Cancel</button>
     <button class="primary" id="save" disabled>Save…</button>
   </div>
 </footer>
@@ -363,7 +364,9 @@ function updateLock() {
   for (const b of $$('.ab button')) b.disabled = locked || (b.dataset.k === 'enh' && !buf.enh);
   $('#play').disabled = locked || !buf.orig;
   $('#save').disabled = locked || !buf.enh;
-  const d = dirty();
+  const d = dirty(), cancellable = status.state === 'working' && status.cancellable;
+  $('#process').hidden = cancellable;
+  $('#cancel').hidden = !cancellable;
   $('#process').disabled = locked || !d;
   $('#process').classList.toggle('primary', d);
   $('#save').classList.toggle('primary', !d);
@@ -566,7 +569,7 @@ function showStatus(s) {
     $('#bar').style.width = `${s.pct * 100}%`;
   } else {
     $('#bar').style.width = '0';
-    st.textContent = s.state === 'error' ? s.error : s.state === 'ready' ? s.result : '';
+    st.textContent = s.state === 'error' ? s.error : s.state === 'ready' ? s.result : s.state === 'cancelled' ? 'Cancelled' : '';
   }
   if (s.state === 'error') $('#note').textContent = '';
   else if (s.note) $('#note').textContent = s.note;
@@ -576,6 +579,7 @@ function showStatus(s) {
 async function poll() {
   try {
     const s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    if (s.state === 'cancelled' && status.state !== 'cancelled') processed = null;  // so Process can run it again
     status = s;
     showStatus(s);
     updateLock();
@@ -639,9 +643,12 @@ $('#copy').addEventListener('click', async () => {
 
 $('#play').addEventListener('click', toggle);
 $('#process').addEventListener('click', processFile);
+const cancel = () => { if (status.state === 'working' && status.cancellable) post('/api/cancel'); };
+$('#cancel').addEventListener('click', cancel);
 for (const b of $$('.ab button')) b.addEventListener('click', () => listen(b.dataset.k));
 addEventListener('keydown', e => {
   const t = e.target;
+  if (e.key === 'Escape') return void cancel();
   if (locked) { if (e.code === 'Space' && t.tagName !== 'INPUT') e.preventDefault(); return; }
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); return void processFile(); }
   if (t.tagName === 'SELECT' || (t.tagName === 'INPUT' && t.type !== 'checkbox') || e.metaKey || e.ctrlKey) return;
