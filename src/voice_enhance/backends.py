@@ -243,7 +243,7 @@ def _need_clearvoice() -> None:
     if not clearvoice_available():
         raise SystemExit("ClearerVoice isn't installed. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
-                         "or skip the rebuild with --no-rebuild")
+                         "or run without --rebuild")
 
 
 _BAND_EDGE: dict = {}

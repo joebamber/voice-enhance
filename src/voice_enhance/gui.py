@@ -2,7 +2,7 @@
 
 A small local web server (127.0.0.1 only) that keeps the models loaded and
 reuses the slow steps (AI cleanup, rebuild) between runs, so moving a gate or
-mix slider re-renders in seconds. The page plays the original and the
+blend slider re-renders in seconds. The page plays the original and the
 enhanced version in sync and switches between them at the same position.
 """
 
@@ -33,11 +33,11 @@ PAGE = Path(__file__).with_name("gui.html")
 DIALOGS = Path(__file__).with_name("dialogs.js")
 
 # settings key (argparse dest) -> flag; only values that differ from the CLI defaults are passed
-FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "mix": "--mix",
-         "gate": "--gate", "laughter_guard": "--laughter-guard", "dereverb": "--dereverb", "ai_dereverb": "--ai-dereverb", "lufs": "--lufs",
+FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "blend": "--blend",
+         "gate": "--gate", "laughter_guard": "--laughter-guard", "ai_dereverb": "--ai-dereverb", "lufs": "--lufs",
          "format": "-f", "stupase_crossover": "--stupase-crossover"}
-OFF_SWITCHES = {"rebuild": "--no-rebuild"}  # flag given when False
-ON_SWITCHES = {"declip": "--declip"}  # flag given when True
+OFF_SWITCHES: dict[str, str] = {}  # flag given when False
+ON_SWITCHES = {"declip": "--declip", "rebuild": "--rebuild"}  # flag given when True
 STUDIO = {"sidon": "--studio", "stupase": "--stupase"}  # studio model -> flag (None = off)
 DEFAULTS = {k: v for k, v in vars(cli.parser().parse_args([])).items()
             if k in FLAGS or k in OFF_SWITCHES or k in ON_SWITCHES or k == "studio"}
@@ -58,7 +58,7 @@ def to_argv(settings: dict) -> list[str]:
 
 # short names for the settings in saved file names
 LABELS = {"-b": "noise", "--max-reduction": "maxred", "--laughter-guard": "laugh", "--ai-dereverb": "aidereverb",
-          "--stupase-crossover": "xover", "--no-rebuild": "norebuild", "--studio": "sidon"}
+          "--stupase-crossover": "xover", "--studio": "sidon"}
 
 
 def settings_label(settings: dict) -> str:
@@ -210,8 +210,8 @@ class Session:
                                backend=args.backend):
                 if new_file:
                     self._load(fid)
-                y, note = cli.process(self.audio, args.backend, mix=args.mix, guard=guard, cache=self.cache,
-                                      rebuild_hf=rebuild_hf, dry=args.dereverb, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip,
+                y, note = cli.process(self.audio, args.backend, mix=1 - args.blend, guard=guard, cache=self.cache,
+                                      rebuild_hf=rebuild_hf, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip,
                                       protect_db=args.protect, rebuild_above=args.rebuild_above, gate_db=args.gate)
                 version = self.status["version"] + 1
                 dst = self.tmp / f"enhanced_{version}.wav"
@@ -236,7 +236,7 @@ class Session:
             return {"error": f"Unsupported format {fmt}"}
         src, folder = self.files[fid]
         where = folder or Path.home() / "Desktop"
-        dst = self.dialogs.choose_save(f"[{settings_label(self.rendered_settings)}] {src.stem}_enhanced{ext}", where)
+        dst = self.dialogs.choose_save(f"{src.stem}_enhanced [{settings_label(self.rendered_settings)}]{ext}", where)
         if dst is None:
             return {"cancelled": True}
         if dst.suffix.lower() not in ENCODERS:

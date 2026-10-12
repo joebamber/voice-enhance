@@ -16,7 +16,6 @@ from . import progress as prog
 from .audio import SR, level_stage, load, loudness_stage, measure, polish_stage, require_ffmpeg, save_wav
 from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
 from .declip import declip
-from .dereverb import dereverb
 from .protect import protect
 from .gate import gate
 from .guard import GuardSettings, apply_guard
@@ -74,7 +73,7 @@ def cleanup_key(backend: str) -> tuple:
 
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
             cache: dict | None = None, verbose: bool = False, rebuild_hf: bool = False,
-            dry: float = 1.0, rebuild_above: float | None = None,
+            rebuild_above: float | None = None,
             repair_clipping: bool = True, protect_db: float = 0.0,
             gate_db: float = 30.0, ai_dereverb: float = 0.0) -> tuple[np.ndarray, str]:
     """`cache` (one dict per source file) keeps the slow steps between calls."""
@@ -106,7 +105,7 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     if mix < 1.0:
         cleaned = mix * cleaned + (1 - mix) * audio
     if backend != "none" and gate_db > 0:
-        # after the mix, so --mix can't bring the background voices back
+        # after the blend, so --blend can't bring the background voices back
         cleaned, closed = gate(cleaned, below_db=gate_db)
         note += f", gate closed {closed * 100:.0f}% of the time"
     if ai_dereverb > 0:
@@ -119,15 +118,12 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
         wet, cached = memo(cache, "aidereverb", ai_key, lambda: aidereverb.run(cleaned))
         cleaned = cleaned + ai_dereverb * (wet - cleaned)
         note += ", AI dereverb (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
-    if backend != "none" and dry > 0:
-        prog.stage("dereverb")
-        cleaned = dereverb(cleaned, dry)
     if rebuild_hf:
         # after the guard, so laughs get rebuilt too instead of flipping between
         # a rebuilt and an un-rebuilt version
         t = time.time()
         prog.stage("rebuild")
-        key += (protect_db, guard and guard.strength, mix, gate_db, ai_dereverb, dry, rebuild_above)
+        key += (protect_db, guard and guard.strength, mix, gate_db, ai_dereverb, rebuild_above)
         (cleaned, what), cached = memo(cache, "rebuild", key, lambda: rebuild(cleaned, rebuild_above))
         note += f", {what} (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
     return cleaned, note
@@ -154,8 +150,6 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
         st.append("guard")
     if args.ai_dereverb > 0:
         st.append("aidereverb")
-    if backend != "none" and args.dereverb > 0:
-        st.append("dereverb")
     if rebuild_hf:
         st.append("rebuild")
     st.append("polish")
@@ -211,8 +205,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("-o", "--output", help="output file (single input) or folder")
     ap.add_argument("-b", "--backend", default="deepfilter", choices=list(BACKENDS),
                     help="noise removal: deepfilter (default: DeepFilterNet AI noise removal) or none")
-    ap.add_argument("--no-rebuild", dest="rebuild", action="store_false",
-                    help="skip the rebuild step (regenerating missing high frequencies)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="regenerate missing high frequencies on band-limited recordings, e.g. phone or Zoom (default off)")
+    ap.add_argument("--no-rebuild", dest="rebuild", action="store_false", help=argparse.SUPPRESS)  # the old default
     ap.add_argument("--rebuild-above", type=float, default=None, metavar="HZ",
                     help="force the rebuild to regenerate everything above this frequency (default: detect where "
                          "the recording's bandwidth stops; recordings that reach 12 kHz aren't rebuilt)")
@@ -220,9 +215,9 @@ def parser() -> argparse.ArgumentParser:
                     help="keep speech that's this far above the room noise from the original, so the AI can't duck "
                          "it; try 22 if loud syllables dip in level (default 0 = off: the original's noise stays out "
                          "of the speech)")
-    ap.add_argument("--gate", type=float, default=30.0, metavar="dB",
+    ap.add_argument("--gate", type=float, default=0.0, metavar="dB",
                     help="silence anything this far below the main speaker, e.g. faint voices in the background "
-                         "that the AI keeps because they're speech (default 30; 0 = off, higher = keep quieter sounds)")
+                         "that the AI keeps because they're speech, e.g. 30 (default 0 = off; higher keeps quieter sounds)")
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
@@ -242,12 +237,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--declip", action="store_true",
                     help="repair clipped (flat-topped) peaks before cleanup (default off)")
     ap.add_argument("--no-declip", dest="declip", action="store_false", help=argparse.SUPPRESS)  # the old default
-    ap.add_argument("--ai-dereverb", type=float, default=0.0, metavar="0-1",
+    ap.add_argument("--ai-dereverb", type=float, default=1.0, metavar="0-1",
                     help="experimental: remove room reverb with an AI model (anvuew's dereverb_room), after the "
                          "cleanup. It keeps the recording's own voice (no re-synthesis); below 1 blends it with the "
-                         "reverberant version (default 0 = off)")
-    ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
-                    help="extra DSP tail suppression after the AI (default 0 = off; the AI handles reverb)")
+                         "reverberant version (default 1; 0 = off)")
     ap.add_argument("--compare", action="store_true",
                     help="render DeepFilterNet with and without the laughter guard "
                          "into <name>_compare/ for A/B listening")
@@ -256,9 +249,11 @@ def parser() -> argparse.ArgumentParser:
                     help="normalise to this loudness with a true-peak limiter (off by default: output stays at the "
                          "source recording's level, loudness is left to the editor)")
     ap.add_argument("--true-peak", type=float, default=-1.5, help="true-peak ceiling in dBTP when --lufs is used (default -1.5)")
-    ap.add_argument("--mix", type=float, default=1.0, help="wet/dry mix 0-1 (default 1.0)")
-    ap.add_argument("--laughter-guard", type=float, default=0.85, metavar="0-1",
-                    help="how strongly to protect laughs and other non-speech voice sounds (default 0.85, 0 = off)")
+    ap.add_argument("--blend", type=float, default=0.0, metavar="0-1",
+                    help="blend this much of the original (noise included) back in, e.g. 0.2 (default 0 = off)")
+    ap.add_argument("--mix", type=float, default=None, help=argparse.SUPPRESS)  # the old form: --mix 0.8 = --blend 0.2
+    ap.add_argument("--laughter-guard", type=float, default=0.0, metavar="0-1",
+                    help="how strongly to protect laughs and other non-speech voice sounds, e.g. 0.85 (default 0 = off)")
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
     ap.add_argument("--list-backends", action="store_true", help="list the noise-removal options")
@@ -270,8 +265,10 @@ def parser() -> argparse.ArgumentParser:
 
 def configure(args) -> None:
     """Check the settings and apply the ones the engines read globally."""
-    if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1 or not 0 <= args.ai_dereverb <= 1:
-        raise SystemExit("--mix, --laughter-guard and --ai-dereverb must be between 0 and 1")
+    if args.mix is not None:
+        args.blend = 1 - args.mix
+    if not 0 <= args.blend <= 1 or not 0 <= args.laughter_guard <= 1 or not 0 <= args.ai_dereverb <= 1:
+        raise SystemExit("--blend, --laughter-guard and --ai-dereverb must be between 0 and 1")
     from . import backends as _b
     _b.DF_SETTINGS["max_reduction_db"] = args.max_reduction
     from . import aidereverb, sidon, stupase
@@ -317,7 +314,7 @@ def main(argv: list[str] | None = None) -> None:
     if rebuild_wanted(args) and not clearvoice_available():
         raise SystemExit("The rebuild step needs ClearerVoice. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
-                         "or run with --no-rebuild")
+                         "or run without --rebuild")
     configure(args)
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
@@ -346,13 +343,15 @@ def main(argv: list[str] | None = None) -> None:
                     loudness_stage(t, folder / f"0_original{fmt}", lufs=args.lufs, tp=args.true_peak)
                 else:
                     level_stage(t, folder / f"0_original{fmt}", ref_lufs=float("nan"))
-            variants = [("deepfilter", "deepfilter", guard),  # the default
+            # the guard is off by default, so compare against it at its usual strength
+            on = guard if guard.strength > 0 else GuardSettings(strength=0.85)
+            variants = [("deepfilter", "deepfilter", on),
                         ("deepfilter_no-guard", "deepfilter", None)]
             for n, (label, b, g) in enumerate(variants, start=1):
                 with prog.progress(short(f"{n}_{label}", 30),
                                    stages_for(args, b, g, rebuild_wanted(args), decode=False), backend=b):
-                    y, note = process(audio, b, mix=args.mix, guard=g, cache=cache,
-                                      verbose=args.verbose, rebuild_hf=rebuild_wanted(args), dry=args.dereverb, ai_dereverb=args.ai_dereverb,
+                    y, note = process(audio, b, mix=1 - args.blend, guard=g, cache=cache,
+                                      verbose=args.verbose, rebuild_hf=rebuild_wanted(args), ai_dereverb=args.ai_dereverb,
                                       repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
                                       gate_db=args.gate)
                     result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
@@ -372,8 +371,8 @@ def main(argv: list[str] | None = None) -> None:
                            backend=args.backend):
             prog.stage("decode")
             audio = load(src)
-            y, note = process(audio, args.backend, mix=args.mix, guard=guard, cache=cache,
-                              rebuild_hf=rebuild_wanted(args), verbose=args.verbose, dry=args.dereverb, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip, protect_db=args.protect,
+            y, note = process(audio, args.backend, mix=1 - args.blend, guard=guard, cache=cache,
+                              rebuild_hf=rebuild_wanted(args), verbose=args.verbose, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip, protect_db=args.protect,
                               rebuild_above=args.rebuild_above, gate_db=args.gate)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)

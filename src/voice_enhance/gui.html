@@ -197,9 +197,9 @@
       <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="ai" title="A DeepFilterNet setting. Changing this re-runs it.">✦ AI</span></label><output></output>
         <input type="range" min="3" max="40" step="1">
         <small>Caps how far any sound is pushed down. Lower leaves natural room tone in the pauses (turn the gate off to hear it).</small></div>
-      <label class="ctl" data-key="mix" data-show="deepfilter"><span class="name">Mix</span><output></output>
-        <input type="range" min="0" max="1" step="0.05">
-        <small>Below 100% blends the original (noise included) back in.</small></label>
+      <div class="ctl" data-key="blend" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Blend original</label><output></output>
+        <input type="range" min="0.05" max="1" step="0.05">
+        <small>Blends this much of the original recording (noise included) back in, for lighter noise removal.</small></div>
       <div class="ctl" data-key="protect" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Protect loud speech</label><output></output>
         <input type="range" min="1" max="40" step="1">
         <small>Turn on if loud words dip in level: speech this far above the room noise comes from the original.</small></div>
@@ -216,9 +216,6 @@
       <div class="ctl" data-key="ai_dereverb"><label class="name"><input type="checkbox" class="sw">AI dereverb<span class="ai" title="A neural network (anvuew's dereverb_room) removes the room's echo.">✦ AI</span><span class="slow" title="New: tuned on vocals, not tested much on speech.">experimental</span></label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small id="ai-dereverb-hint">Removes room echo while keeping the recording's own voice (nothing is re-synthesised). Below 100% blends some of the room back. Slow on long files; changing its strength doesn't re-run it.</small></div>
-      <div class="ctl" data-key="dereverb" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Dereverb</label><output></output>
-        <input type="range" min="0.05" max="1" step="0.05">
-        <small>Extra suppression of room echo tails, on top of the AI.</small></div>
     </section>
 
     <section class="card">
@@ -274,11 +271,10 @@ const SPECS = {
   studio: { off: null, on: 'stupase' },
   stupase_crossover: { fmt: v => `${(v / 1000).toFixed(v % 1000 ? 2 : 0)} kHz`, off: 0, on: 5000 },
   max_reduction: { fmt: v => `${v} dB`, off: null, on: 12 },
-  mix: { fmt: v => `${Math.round(v * 100)}%` },
+  blend: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 0.2 },
   protect: { fmt: v => `${v} dB`, off: 0, on: 22 },
   gate: { fmt: v => `${v} dB`, off: 0, on: 30 },
   laughter_guard: { fmt: v => v.toFixed(2), off: 0, on: 0.85 },
-  dereverb: { fmt: v => v.toFixed(2), off: 0, on: 0.5 },
   ai_dereverb: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 1 },
 };
 
