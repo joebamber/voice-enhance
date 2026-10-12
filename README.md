@@ -14,6 +14,22 @@ brew install ffmpeg uv
 uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt
 ```
 
+## The app
+
+```
+voice-enhance --gui
+```
+
+Opens the app in your browser. It runs on your Mac like the command line. Drop a recording onto the page (or click **Open…**), and it's cleaned up with the default settings.
+
+- **A/B:** press **B** (or click **Original** / **Enhanced**) to switch between the original and the cleaned-up version at the same spot while it plays. **Space** plays and pauses, the arrow keys jump 5 s, and clicking the waveform seeks.
+- **The waveform** is drawn in dB, so you can see the noise between words and what the gate removes.
+- **Sliders** re-render when you let go. Only the settings marked *re-runs AI* (engine, max reduction, declip, Resemble options) redo the AI cleanup. The others reuse it and update in about a second (the rebuild re-runs too, on band-limited recordings). Double-click a slider to reset it.
+- **Save…** writes the version you're hearing in the format you pick, next to the original by default.
+- **The command line** at the bottom gives the same settings as a `voice-enhance` command, for batch-processing a folder.
+
+`voice-enhance --gui ep.wav` opens a file straight away. Keep the Terminal window open while you use the app, and press Ctrl+C there to quit.
+
 ## Commands
 
 | Command | What it does | Default |
@@ -25,7 +41,7 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 | `--quality 32` | With `-b resemble`: sets Resemble's generation steps. 32 is about twice as fast; 128 is slower and smoother. | 64 |
 | `--temperature 0.3` | With `-b resemble`: sets Resemble's variation. Lower is steadier; higher sounds more natural but less consistent. | 0.5 |
 | `--denoise-first` | With `-b resemble`: makes Resemble run its denoiser before re-synthesis: stronger cleanup, but can sound more processed. | Off |
-| `--no-declip` | Doesn't repair clipped peaks. | Declip on |
+| `--declip` | Repairs clipped (flat-topped) peaks before cleanup. | Off |
 | `--protect 22` | Turns on speech protection: speech this far above the room noise comes from the original, noise and all, so the AI can't duck loud syllables. Use it if loud words dip in level. Higher values let the AI process more. | 0 (off) |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. | No cap |
 | `--gate 40` | Sets the background gate: anything this many dB below the main speaker is silenced, e.g. faint voices in the background, which the AI keeps because they're speech. Higher keeps quieter sounds; 0 turns it off. | 30 dB |
@@ -59,7 +75,7 @@ By default DeepFilterNet removes as much noise as it can, and the background gat
 | Loud words dipping in level | `--protect 22` | Off by default, so the AI cleans all of the speech. If it ducks loud syllables, this takes speech more than 22 dB above the room noise from the original instead, noise and all (there the voice mostly masks it). Lower (e.g. `--protect 15`) keeps more of the original voice. |
 | **More** room echo removed | `--dereverb 0.5` | Adds DSP reverb-tail suppression after the AI (0–1). |
 | **Much more** cleanup (echo and noise) | `-b resemble --denoise-first` | Generative re-synthesis. Strongest, but slow and can sound robotic. |
-| No noise removal at all | `-b none` | Keeps declip, rebuild and EQ only. |
+| No noise removal at all | `-b none` | Keeps declip (if on), rebuild and EQ only. |
 
 The laughter guard (`--laughter-guard`) also lets a little noise through around laughs, so lower it if you hear noise come and go there.
 

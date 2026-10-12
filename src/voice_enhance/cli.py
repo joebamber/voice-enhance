@@ -52,21 +52,45 @@ def ts(sec: float) -> str:
     return f"{int(m)}:{s:04.1f}"
 
 
+def memo(cache: dict | None, kind: str, key: tuple, fn):
+    """Reuse the last result of an expensive step while its inputs are unchanged.
+
+    Holds one result per kind, so moving a slider in the GUI only redoes the
+    steps after the AI cleanup instead of the whole file.
+    """
+    if cache is None:
+        return fn(), False
+    hit = cache.get(kind)
+    if hit is not None and hit[0] == key:
+        return hit[1], True
+    value = fn()
+    cache[kind] = (key, value)
+    return value, False
+
+
+def cleanup_key(backend: str) -> tuple:
+    from . import backends as _b, resemble
+    settings = sorted(resemble.SETTINGS.items()) if backend.startswith("resemble") else None
+    return backend, _b.DF_SETTINGS["max_reduction_db"], repr(settings)
+
+
 def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings | None,
-            gentle_cache: dict, verbose: bool = False, rebuild_hf: bool = False,
+            cache: dict | None = None, verbose: bool = False, rebuild_hf: bool = False,
             dry: float = 1.0, rebuild_above: float | None = None,
             repair_clipping: bool = True, protect_db: float = 0.0,
             gate_db: float = 30.0) -> tuple[np.ndarray, str]:
+    """`cache` (one dict per source file) keeps the slow steps between calls."""
     notes = []
     if repair_clipping:
         prog.stage("declip")
-        audio, n_fixed = declip(audio)
+        (audio, n_fixed), _ = memo(cache, "declip", (), lambda: declip(audio))
         if n_fixed:
             notes.append(f"repaired {n_fixed} clipped peaks")
     t = time.time()
     prog.stage("cleanup")
-    cleaned = BACKENDS[backend](audio)
-    notes.append(f"{backend} {time.time() - t:.1f}s")
+    key = (repair_clipping, cleanup_key(backend))
+    cleaned, cached = memo(cache, "cleanup", key, lambda: BACKENDS[backend](audio))
+    notes.append(f"{backend} " + ("(reused)" if cached else f"{time.time() - t:.1f}s"))
     # Mask-based cleaners stay sample-aligned with the input, so loud (already
     # clean) speech can come from the original; generative ones can't be blended.
     if protect_db > 0 and backend in ("deepfilter", "clearvoice", "resemble-denoise"):
@@ -75,9 +99,8 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     note = ", ".join(notes)
     if backend != "none" and guard and guard.strength > 0:
         prog.stage("guard")
-        if "g" not in gentle_cache:
-            gentle_cache["g"] = deepfilter(audio, atten_lim_db=GENTLE_DB)
-        cleaned, _, regions = apply_guard(audio, cleaned, gentle_cache["g"], guard)
+        gentle, _ = memo(cache, "gentle", (repair_clipping,), lambda: deepfilter(audio, atten_lim_db=GENTLE_DB))
+        cleaned, _, regions = apply_guard(audio, cleaned, gentle, guard)
         secs = sum(b - a for a, b in regions)
         note += f", laughter guard protected {len(regions)} moments ({secs:.1f}s)"
         if verbose and regions:
@@ -96,8 +119,9 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
         # a rebuilt and an un-rebuilt version
         t = time.time()
         prog.stage("rebuild")
-        cleaned, what = rebuild(cleaned, rebuild_above)
-        note += f", {what} ({time.time() - t:.1f}s)"
+        key += (protect_db, guard and guard.strength, mix, gate_db, dry, rebuild_above)
+        (cleaned, what), cached = memo(cache, "rebuild", key, lambda: rebuild(cleaned, rebuild_above))
+        note += f", {what} (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
     return cleaned, note
 
 
@@ -168,7 +192,7 @@ def source_lufs(audio: np.ndarray) -> float:
         return measure(t)["lufs"]
 
 
-def main(argv: list[str] | None = None) -> None:
+def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="voice-enhance",
         description="Clean up spoken audio locally: AI denoise, laughter guard, podcast polish, loudness normalisation.",
@@ -198,8 +222,9 @@ def main(argv: list[str] | None = None) -> None:
                     help="resemble: prior temperature (default 0.5; lower = steadier, higher = more natural variation)")
     ap.add_argument("--denoise-first", action="store_true",
                     help="resemble: run its denoiser before re-synthesis (stronger cleanup; can sound more processed)")
-    ap.add_argument("--no-declip", dest="declip", action="store_false",
-                    help="don't repair clipped (flat-topped) peaks before cleanup")
+    ap.add_argument("--declip", action="store_true",
+                    help="repair clipped (flat-topped) peaks before cleanup (default off)")
+    ap.add_argument("--no-declip", dest="declip", action="store_false", help=argparse.SUPPRESS)  # the old default
     ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
                     help="extra DSP tail suppression after the AI (default 0 = off; the AI handles reverb)")
     ap.add_argument("--compare", action="store_true",
@@ -226,32 +251,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-polish", action="store_true", help="skip EQ / de-ess / compression (loudness still applied)")
     ap.add_argument("-v", "--verbose", action="store_true", help="list the timestamps the laughter guard protected")
     ap.add_argument("--list-backends", action="store_true", help="show which backends work on this machine")
+    ap.add_argument("--gui", action="store_true",
+                    help="open the app in your browser: sliders, and an A/B player against the original")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
-    args = ap.parse_args(argv)
-    # Apple Silicon GPU: let any op PyTorch hasn't implemented on MPS fall back to CPU
-    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    # ClearVoice reads audio through pydub, which runs ffmpeg without -nostdin.
-    # With a terminal on stdin, ffmpeg can swallow keypresses or get suspended,
-    # hanging the run. We never read stdin, so point it at /dev/null.
-    try:
-        if sys.stdin is not None and sys.stdin.isatty():
-            null = os.open(os.devnull, os.O_RDONLY)
-            os.dup2(null, 0)
-            os.close(null)
-    except OSError:
-        pass
+    return ap
 
-    if args.list_backends:
-        print("\n".join(available_backends()))
-        return
 
-    if not args.inputs:
-        ap.error("give at least one audio file or folder")
-    require_ffmpeg()
-    if args.rebuild and not clearvoice_available():
-        raise SystemExit("The rebuild step needs ClearerVoice. Reinstall with:\n"
-                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
-                         "or run with --no-rebuild")
+def configure(args) -> None:
+    """Check the settings and apply the ones the engines read globally."""
     if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1:
         raise SystemExit("--mix and --laughter-guard must be between 0 and 1")
     if not 0 <= args.tone_amount <= 1:
@@ -270,6 +277,41 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("--quality must be 1-128 and --temperature 0-1")
     resemble.SETTINGS.update(nfe=args.quality, temperature=args.temperature,
                              denoise_first=0.9 if args.denoise_first else 0.1)
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = parser()
+    args = ap.parse_args(argv)
+    # Apple Silicon GPU: let any op PyTorch hasn't implemented on MPS fall back to CPU
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    # ClearVoice reads audio through pydub, which runs ffmpeg without -nostdin.
+    # With a terminal on stdin, ffmpeg can swallow keypresses or get suspended,
+    # hanging the run. We never read stdin, so point it at /dev/null.
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            null = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(null, 0)
+            os.close(null)
+    except OSError:
+        pass
+
+    if args.list_backends:
+        print("\n".join(available_backends()))
+        return
+
+    if args.gui:
+        require_ffmpeg()
+        from . import gui
+        gui.serve(args.inputs[0] if args.inputs else None)
+        return
+    if not args.inputs:
+        ap.error("give at least one audio file or folder")
+    require_ffmpeg()
+    if args.rebuild and not clearvoice_available():
+        raise SystemExit("The rebuild step needs ClearerVoice. Reinstall with:\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
+                         "or run with --no-rebuild")
+    configure(args)
     fmt = "." + args.format.lower().lstrip(".")
     guard = GuardSettings(strength=args.laughter_guard)
     files = gather(args.inputs)
@@ -278,7 +320,7 @@ def main(argv: list[str] | None = None) -> None:
     single_file_out = out_arg is not None and out_arg.suffix and len(files) == 1 and not args.compare
 
     for src in files:
-        gentle: dict = {}
+        cache: dict = {}
         started = time.time()
 
         if args.compare:
@@ -306,7 +348,7 @@ def main(argv: list[str] | None = None) -> None:
             for n, (label, b, g, tone) in enumerate(variants, start=1):
                 with prog.progress(short(f"{n}_{label}", 30),
                                    stages_for(args, b, g, args.rebuild, decode=False, tone=tone), backend=b):
-                    y, note = process(audio, b, mix=args.mix, guard=g, gentle_cache=gentle,
+                    y, note = process(audio, b, mix=args.mix, guard=g, cache=cache,
                                       verbose=args.verbose, rebuild_hf=args.rebuild, dry=args.dereverb,
                                       repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
                                       gate_db=args.gate)
@@ -327,7 +369,7 @@ def main(argv: list[str] | None = None) -> None:
                            backend=args.backend):
             prog.stage("decode")
             audio = load(src)
-            y, note = process(audio, args.backend, mix=args.mix, guard=guard, gentle_cache=gentle,
+            y, note = process(audio, args.backend, mix=args.mix, guard=guard, cache=cache,
                               rebuild_hf=args.rebuild, verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip, protect_db=args.protect,
                               rebuild_above=args.rebuild_above, gate_db=args.gate)
             result = render(y, dst, args, source_lufs(audio))

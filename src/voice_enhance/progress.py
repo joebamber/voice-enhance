@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
+from typing import Callable
 
 from tqdm import tqdm
 
@@ -17,6 +18,9 @@ LABELS = {"decode": "reading", "declip": "fixing clipping", "cleanup": "cleaning
           "tone": "tone", "polish": "polishing", "loudness": "writing"}
 
 _active: "Progress | None" = None
+
+# Called with (stage label, fraction done 0..1) whenever a bar moves; the GUI sets it.
+listener: "Callable[[str, float], None] | None" = None
 
 
 class Progress:
@@ -40,6 +44,8 @@ class Progress:
     def _set(self, value: float) -> None:
         self.bar.n = min(value, self.total)
         self.bar.refresh()
+        if listener is not None:
+            listener(LABELS.get(self.current, "done"), min(value, self.total) / (self.total or 1.0))
 
     def stage(self, name: str) -> None:
         if self.current is not None:

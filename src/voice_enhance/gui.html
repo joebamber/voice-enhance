@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>voice-enhance</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --panel: #ffffff; --ink: #1d1c1a; --muted: #6f6c66; --line: #e3e0d9;
+    --accent: #d9481f; --accent-soft: rgba(217, 72, 31, .12); --orig: #b4b0a8; --wave-bg: #faf9f6;
+    --ok: #2f7d4f; --err: #b3261e; --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121211; --panel: #1b1b1a; --ink: #ecebe8; --muted: #9b978f; --line: #2c2b29;
+      --accent: #ff7043; --accent-soft: rgba(255, 112, 67, .14); --orig: #77736b; --wave-bg: #161615;
+      --ok: #6fcf97; --err: #ff8a80; --shadow: none;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased; padding-bottom: 96px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+  button, select { font: inherit; color: inherit; }
+  button {
+    border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.06); }
+  button:disabled { opacity: .45; cursor: default; }
+  select {
+    border: 1px solid var(--line); background: var(--panel); border-radius: 7px; padding: 6px 8px; width: 100%;
+  }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 18px 0 14px; }
+  .mark { width: 22px; height: 22px; display: grid; grid-auto-flow: column; align-items: center; gap: 2px; }
+  .mark i { display: block; width: 3px; border-radius: 2px; background: var(--accent); }
+  h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  .ver { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+
+  .player { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+  .filebar { display: flex; align-items: baseline; gap: 10px; padding: 14px 18px 10px; min-height: 44px; }
+  .filebar .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .filebar .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .filebar .spacer { flex: 1; }
+  .state { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .state.err { color: var(--err); }
+
+  .wave { position: relative; height: 190px; background: var(--wave-bg); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: pointer; }
+  .wave canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .wave .empty {
+    position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); cursor: default;
+  }
+  .wave .empty b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 4px; }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: transparent; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+  .legend { position: absolute; top: 8px; left: 12px; display: flex; gap: 12px; font-size: 11px; color: var(--muted); pointer-events: none; }
+  .legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .legend .lo::before { background: var(--orig); }
+  .legend .le::before { background: var(--accent); }
+  .wave .hover { position: absolute; top: 8px; right: 12px; font-size: 11px; color: var(--muted); pointer-events: none; }
+
+  .transport { display: flex; align-items: center; gap: 14px; padding: 12px 18px; flex-wrap: wrap; }
+  .play { width: 40px; height: 40px; border-radius: 50%; padding: 0; display: grid; place-items: center; }
+  .play svg { width: 16px; height: 16px; fill: currentColor; }
+  .play .i-pause, .play.playing .i-play { display: none; }
+  .play.playing .i-pause { display: block; }
+  .time { min-width: 110px; }
+  .ab { display: inline-flex; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .ab button { border: 0; background: transparent; border-radius: 7px; padding: 6px 16px; color: var(--muted); }
+  .ab button.on { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
+  .ab button[data-k="enh"].on { color: var(--accent); }
+  .keys { color: var(--muted); font-size: 12px; margin-left: auto; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+  .note { padding: 0 18px 14px; color: var(--muted); min-height: 18px; }
+
+  fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+  #settings:disabled .card { opacity: .5; }
+  #settings:disabled { cursor: progress; }
+  .player.busy .wave { cursor: progress; }
+  .player.busy canvas, .player.busy .legend, .player.busy .time { opacity: .4; }
+  .card { transition: opacity .15s; }
+  .lockmsg { margin: 16px 2px -4px; color: var(--muted); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+  .lockmsg::before {
+    content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent;
+    animation: spin .8s linear infinite; flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px 6px; box-shadow: var(--shadow); }
+  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .ctl { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 10px; margin-bottom: 14px; }
+  .ctl .name { font-weight: 550; }
+  .ctl output { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+  .ctl input[type=range], .ctl select { grid-column: 1 / -1; }
+  .ctl small { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+  .ctl.hidden { display: none; }
+  .ctl.disabled { opacity: .45; }
+  .ctl .sw { accent-color: var(--accent); margin: 0 6px 0 0; }
+  .ctl label.name { cursor: pointer; }
+  .ctl.off input[type=range], .ctl.off output { display: none; }
+  .slow { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 6px; font-weight: 500; vertical-align: 1px; }
+  .check { display: flex; gap: 8px; align-items: baseline; }
+  .check input { accent-color: var(--accent); }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 2px; }
+
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; background: color-mix(in srgb, var(--panel) 92%, transparent);
+    backdrop-filter: blur(10px); border-top: 1px solid var(--line);
+  }
+  footer .wrap { display: flex; align-items: center; gap: 12px; padding-top: 12px; padding-bottom: 12px; }
+  .cmd {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 4px 4px 4px 10px;
+  }
+  .cmd code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .cmd button { padding: 4px 10px; font-size: 12px; }
+  footer select { width: auto; }
+  footer label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+    padding: 10px 14px; border-radius: 10px; display: none; gap: 12px; align-items: center; max-width: calc(100% - 32px);
+  }
+  .toast.show { display: flex; }
+  .toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toast button { background: transparent; color: inherit; border-color: currentColor; padding: 3px 10px; font-size: 12px; }
+
+  .drop {
+    position: fixed; inset: 0; background: var(--accent-soft); border: 3px dashed var(--accent); display: none;
+    place-items: center; font-size: 20px; font-weight: 600; color: var(--accent); z-index: 10; pointer-events: none;
+  }
+  .drop.show { display: grid; }
+
+  @media (max-width: 720px) {
+    .keys { display: none; }
+    footer .wrap { flex-wrap: wrap; }
+    .cmd { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark" aria-hidden="true"><i style="height:8px"></i><i style="height:16px"></i><i style="height:22px"></i><i style="height:12px"></i><i style="height:6px"></i></div>
+    <h1>voice-enhance</h1><span class="ver" id="ver"></span>
+    <span class="spacer"></span>
+    <button id="open">Open…</button>
+  </header>
+
+  <section class="player">
+    <div class="filebar">
+      <span class="name" id="fname">No file</span><span class="meta" id="fmeta"></span>
+      <span class="spacer"></span>
+      <span class="state" id="state"></span>
+    </div>
+    <div class="wave" id="wave">
+      <canvas id="cv"></canvas>
+      <div class="legend" id="legend" hidden><span class="lo">Original</span><span class="le">Enhanced</span></div>
+      <div class="hover mono" id="hover"></div>
+      <div class="empty" id="empty"><div><b>Drop a recording here</b>or click Open… to choose one</div></div>
+      <div class="bar"><i id="bar"></i></div>
+    </div>
+    <div class="transport">
+      <button class="play" id="play" title="Play / pause (Space)" disabled>
+        <svg class="i-play" viewBox="0 0 16 16"><path d="M4 2.5v11l9.5-5.5z"/></svg>
+        <svg class="i-pause" viewBox="0 0 16 16"><path d="M3.5 2h3v12h-3zM9.5 2h3v12h-3z"/></svg>
+      </button>
+      <span class="time mono" id="time">0:00.0 / 0:00.0</span>
+      <div class="ab" role="group" aria-label="Listen to">
+        <button data-k="orig">Original</button><button data-k="enh" class="on">Enhanced</button>
+      </div>
+      <span class="keys"><kbd>Space</kbd> play · <kbd>B</kbd> switch A/B · <kbd>←</kbd><kbd>→</kbd> 5 s</span>
+    </div>
+    <div class="note mono" id="note"></div>
+  </section>
+
+  <p class="lockmsg" id="lockmsg" hidden></p>
+  <fieldset id="settings">
+  <div class="grid">
+    <section class="card">
+      <h2>Noise</h2>
+      <label class="ctl" data-key="backend"><span class="name">Engine<span class="slow" title="Changing this re-runs the AI cleanup">re-runs AI</span></span><span></span>
+        <select></select>
+        <small id="backend-hint"></small></label>
+      <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="slow" title="Changing this re-runs the AI cleanup">re-runs AI</span></label><output></output>
+        <input type="range" min="3" max="40" step="1">
+        <small>Caps how far any sound is pushed down. Lower leaves natural room tone in the pauses (turn the gate off to hear it).</small></div>
+      <label class="ctl" data-key="mix"><span class="name">Mix</span><output></output>
+        <input type="range" min="0" max="1" step="0.05">
+        <small>Below 100% blends the original (noise included) back in.</small></label>
+      <div class="ctl" data-key="protect" data-show="deepfilter clearvoice resemble-denoise"><label class="name"><input type="checkbox" class="sw">Protect loud speech</label><output></output>
+        <input type="range" min="1" max="40" step="1">
+        <small>Turn on if loud words dip in level: speech this far above the room noise comes from the original.</small></div>
+    </section>
+
+    <section class="card">
+      <h2>Background</h2>
+      <div class="ctl" data-key="gate"><label class="name"><input type="checkbox" class="sw">Background gate</label><output></output>
+        <input type="range" min="1" max="60" step="1">
+        <small>Silences anything this far below the speaker, like faint voices in the background. Higher keeps quieter sounds.</small></div>
+      <div class="ctl" data-key="laughter_guard"><label class="name"><input type="checkbox" class="sw">Laughter guard</label><output></output>
+        <input type="range" min="0.05" max="1" step="0.05">
+        <small>Protects laughs from the cleanup. Lower it if noise comes and goes around laughs.</small></div>
+      <div class="ctl" data-key="dereverb"><label class="name"><input type="checkbox" class="sw">Dereverb</label><output></output>
+        <input type="range" min="0.05" max="1" step="0.05">
+        <small>Extra suppression of room echo tails, on top of the AI.</small></div>
+    </section>
+
+    <section class="card">
+      <h2>Tone &amp; repair</h2>
+      <label class="ctl" data-key="tone"><span class="name">Tone</span><span></span>
+        <select><option value="neutral">Neutral: the recording's own tone</option><option value="warm">Warm: EQ toward Adobe's tone</option></select>
+        <small>Warm adds body to a thin mic, but lifts boom and hiss on a good one.</small></label>
+      <label class="ctl" data-key="warmth" data-tone="warm"><span class="name">Warmth</span><output></output>
+        <input type="range" min="-12" max="6" step="1">
+        <small>Low end. Lower is less boomy.</small></label>
+      <label class="ctl" data-key="presence" data-tone="warm"><span class="name">Presence</span><output></output>
+        <input type="range" min="0" max="12" step="1">
+        <small>Clarity: lifts 3–8 kHz.</small></label>
+      <label class="ctl" data-key="rebuild"><span class="name">Rebuild high frequencies</span><span></span>
+        <select><option value="1">Auto: only if band-limited (phone, Zoom)</option><option value="0">Off</option></select>
+        <small id="rebuild-hint">Regenerates the treble a recording is missing below 12 kHz. Slow on long files.</small></label>
+      <label class="ctl check" data-key="declip"><input type="checkbox"><span class="name">Repair clipped peaks<span class="slow" title="Changing this re-runs the AI cleanup">re-runs AI</span></span></label>
+    </section>
+
+    <section class="card" id="resemble-card" hidden>
+      <h2>Resemble</h2>
+      <label class="ctl" data-key="quality"><span class="name">Quality<span class="slow">re-runs AI</span></span><output></output>
+        <input type="range" min="8" max="128" step="8">
+        <small>Generation steps. 32 is about twice as fast; 128 is smoother.</small></label>
+      <label class="ctl" data-key="temperature"><span class="name">Temperature<span class="slow">re-runs AI</span></span><output></output>
+        <input type="range" min="0" max="1" step="0.05">
+        <small>Lower is steadier; higher sounds more natural but less consistent.</small></label>
+      <label class="ctl check" data-key="denoise_first"><input type="checkbox"><span class="name">Denoise first<span class="slow">re-runs AI</span></span></label>
+    </section>
+  </div>
+  </fieldset>
+</div>
+
+<footer>
+  <div class="wrap">
+    <button id="reset" title="Back to the default settings">Reset</button>
+    <div class="cmd" title="The same settings on the command line">
+      <code class="mono" id="cmd">voice-enhance</code><button id="copy">Copy</button>
+    </div>
+    <label>Loudness
+      <select id="lufs"><option value="">Source level</option><option value="-16">−16 LUFS</option><option value="-19">−19 LUFS</option><option value="-23">−23 LUFS</option></select></label>
+    <label>Format <select id="format"></select></label>
+    <button class="primary" id="save" disabled>Save…</button>
+  </div>
+</footer>
+
+<div class="toast" id="toast"><span id="toast-msg"></span><button id="reveal">Show in Finder</button></div>
+<div class="drop" id="drop">Drop to open</div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const post = (url, body, headers = {}) => fetch(url, {
+  method: 'POST',
+  headers: { 'X-Voice-Enhance': '1', 'Content-Type': 'application/json', ...headers },
+  body: body instanceof Blob ? body : JSON.stringify(body || {}),
+}).then(r => r.json());
+
+const BACKEND_LABELS = {
+  deepfilter: 'DeepFilterNet: natural AI noise removal',
+  resemble: 'Resemble: re-synthesis, removes echo, slow',
+  'resemble-denoise': 'Resemble denoiser only',
+  clearvoice: 'ClearerVoice',
+  apple: 'Apple voice isolation',
+  none: 'None: no noise removal',
+};
+const BACKEND_HINTS = {
+  deepfilter: 'The default. Keeps the voice natural.',
+  resemble: 'Strongest cleanup but can sound robotic. Several minutes per minute of audio.',
+  none: 'Keeps declip (if on), rebuild and tone only.',
+};
+const db = v => `${v > 0 ? '+' : ''}${v} dB`;
+// Settings with an off state get a switch (off: the value the CLI treats as off; on: where the
+// slider starts when switched on, unless it was on before or is on by default).
+const SPECS = {
+  max_reduction: { fmt: v => `${v} dB`, off: null, on: 12 },
+  mix: { fmt: v => `${Math.round(v * 100)}%` },
+  protect: { fmt: v => `${v} dB`, off: 0, on: 22 },
+  gate: { fmt: v => `${v} dB`, off: 0, on: 30 },
+  laughter_guard: { fmt: v => v.toFixed(2), off: 0, on: 0.85 },
+  dereverb: { fmt: v => v.toFixed(2), off: 0, on: 0.5 },
+  warmth: { fmt: db },
+  presence: { fmt: db },
+  quality: { fmt: v => `${v} steps` },
+  temperature: { fmt: v => v.toFixed(2) },
+};
+
+let info, settings, status = {}, fileId = null, version = 0;
+const lastOn = {};  // value each switched-off setting had, to come back to
+
+// --- settings ---------------------------------------------------------------
+
+function syncControls() {
+  for (const el of $$('.ctl[data-key]')) {
+    const k = el.dataset.key, v = settings[k], spec = SPECS[k] || {};
+    const range = $('input[type=range]', el), sel = $('select', el), box = $('input[type=checkbox]:not(.sw)', el), sw = $('.sw', el);
+    const on = !sw || v !== spec.off;
+    if (sw) { sw.checked = on; el.classList.toggle('off', !on); }
+    if (range && on) { range.value = v; $('output', el).textContent = (spec.fmt || String)(v); }
+    if (sel) sel.value = typeof v === 'boolean' ? (v ? '1' : '0') : v;
+    if (box) box.checked = !!v;
+    if (el.dataset.show) {
+      const ok = el.dataset.show.split(' ').includes(settings.backend);
+      el.classList.toggle('disabled', !ok);
+      for (const i of $$('input,select', el)) i.disabled = !ok;
+    }
+    if (el.dataset.tone) el.classList.toggle('hidden', settings.tone !== el.dataset.tone);
+  }
+  $('#resemble-card').hidden = !settings.backend.startsWith('resemble');
+  $('#backend-hint').textContent = BACKEND_HINTS[settings.backend] || '';
+  $('#lufs').value = settings.lufs == null ? '' : String(settings.lufs);
+  $('#format').value = settings.format;
+  if (!info.rebuild_available) { $('[data-key=rebuild] select').disabled = true; $('#rebuild-hint').textContent = 'Needs ClearerVoice, which isn\'t installed.'; }
+}
+
+async function change(k, v) {
+  settings[k] = v;
+  syncControls();
+  if (fileId == null) return;
+  if (k === 'format') return void post('/api/apply', { settings });  // only used when saving: never re-renders
+  pendingJob = Infinity;  // locked until the server says which render this started
+  updateLock();
+  const r = await post('/api/apply', { settings });
+  pendingJob = r.job ?? null;
+  updateLock();
+}
+
+// While anything is processing the whole page is locked, the player included: changes only
+// take effect once it's done, and listening meanwhile would play a render that doesn't
+// match the settings on screen.
+let pendingJob = null, locked = false;
+function updateLock() {
+  if (pendingJob != null && pendingJob !== Infinity && (status.finished || 0) >= pendingJob && status.state !== 'working') pendingJob = null;
+  locked = status.state === 'working' || pendingJob != null;
+  if (locked && playing) pause();
+  $('.player').classList.toggle('busy', locked);
+  $('#settings').disabled = locked;
+  for (const id of ['#open', '#reset', '#lufs', '#format', '#copy']) $(id).disabled = locked;
+  for (const b of $$('.ab button')) b.disabled = locked;
+  $('#play').disabled = locked || !buf.orig;
+  $('#save').disabled = locked || !buf.enh;
+  const msg = $('#lockmsg');
+  msg.hidden = !locked;
+  msg.textContent = buf.enh
+    ? 'Rendering with the new settings. Everything unlocks when it\'s ready.'
+    : 'Processing. Everything unlocks when it\'s ready.';
+}
+
+function bindControls() {
+  for (const el of $$('.ctl[data-key]')) {
+    const k = el.dataset.key, spec = SPECS[k] || {};
+    const range = $('input[type=range]', el), sel = $('select', el), box = $('input[type=checkbox]:not(.sw)', el), sw = $('.sw', el);
+    if (sw) sw.addEventListener('change', () => {
+      if (!sw.checked) { lastOn[k] = settings[k]; return change(k, spec.off); }
+      change(k, lastOn[k] ?? (info.defaults[k] !== spec.off ? info.defaults[k] : spec.on));
+    });
+    if (range) {
+      const read = () => parseFloat(range.value);
+      range.addEventListener('input', () => { $('output', el).textContent = (spec.fmt || String)(read()); });
+      range.addEventListener('change', () => change(k, read()));
+      range.addEventListener('dblclick', () => change(k, info.defaults[k]));
+      range.title = 'Double-click for the default';
+    }
+    if (sel) sel.addEventListener('change', () => change(k, typeof info.defaults[k] === 'boolean' ? sel.value === '1' : sel.value));
+    if (box) box.addEventListener('change', () => change(k, box.checked));
+  }
+  $('#lufs').addEventListener('change', e => change('lufs', e.target.value === '' ? null : parseFloat(e.target.value)));
+  $('#format').addEventListener('change', e => change('format', e.target.value));
+  $('#reset').addEventListener('click', () => { settings = { ...info.defaults }; change('backend', settings.backend); });
+}
+
+// --- player -------------------------------------------------------------------
+
+let ctx = null, nodes = [], playing = false, t0 = 0, p0 = 0, which = 'enh';
+const buf = { orig: null, enh: null }, peaks = { orig: null, enh: null };
+const ac = () => (ctx ||= new (window.AudioContext || window.webkitAudioContext)());
+const duration = () => Math.max(buf.orig?.duration || 0, buf.enh?.duration || 0);
+const pos = () => (playing ? Math.min(p0 + Math.max(0, ac().currentTime - t0), duration()) : p0);
+const fmtTime = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+
+async function fetchBuffer(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  return ac().decodeAudioData(await r.arrayBuffer());
+}
+
+function stopNodes() {
+  for (const n of nodes) { try { n.src.stop(); } catch {} n.src.disconnect(); }
+  nodes = [];
+}
+
+function start(at) {
+  const c = ac();
+  c.resume();
+  stopNodes();
+  const when = c.currentTime + 0.03;
+  for (const k of ['orig', 'enh']) {
+    const b = buf[k];
+    if (!b || at >= b.duration) continue;
+    const src = c.createBufferSource(), g = c.createGain();
+    src.buffer = b;
+    g.gain.value = k === which ? 1 : 0;
+    src.connect(g).connect(c.destination);
+    src.start(when, at);
+    nodes.push({ k, src, g });
+  }
+  t0 = when; p0 = at; playing = true;
+  playIcon();
+}
+
+function pause() { p0 = pos(); playing = false; stopNodes(); playIcon(); }
+function toggle() {
+  if (!buf.orig || locked) return;
+  if (playing) return pause();
+  start(p0 >= duration() - 0.05 ? 0 : p0);
+}
+function seek(t) {
+  t = Math.max(0, Math.min(duration(), t));
+  if (playing) start(t); else p0 = t;
+  draw();
+}
+function listen(k) {
+  which = k;
+  if (ctx) for (const n of nodes) n.g.gain.setTargetAtTime(n.k === k ? 1 : 0, ctx.currentTime, 0.004);
+  for (const b of $$('.ab button')) b.classList.toggle('on', b.dataset.k === k);
+  draw();
+}
+function playIcon() {
+  $('#play').classList.toggle('playing', playing);
+  $('#play').title = `${playing ? 'Pause' : 'Play'} (Space)`;
+}
+
+// --- waveform -----------------------------------------------------------------
+
+const cv = $('#cv'), wave = $('#wave');
+
+function computePeaks(b, cols) {
+  if (!b) return null;
+  const d = b.getChannelData(0), out = new Float32Array(cols), per = d.length / cols;
+  for (let c = 0; c < cols; c++) {
+    let m = 0;
+    const end = Math.min(d.length, Math.floor((c + 1) * per));
+    for (let i = Math.floor(c * per); i < end; i++) { const a = Math.abs(d[i]); if (a > m) m = a; }
+    // dB scale (-60..0 dBFS) so the noise floor and what the gate removes are visible
+    out[c] = Math.max(0, (20 * Math.log10(m + 1e-9) + 60) / 60);
+  }
+  return out;
+}
+
+function refreshPeaks() {
+  const cols = Math.max(1, Math.floor(cv.clientWidth * devicePixelRatio / 2));
+  peaks.orig = computePeaks(buf.orig, cols);
+  peaks.enh = computePeaks(buf.enh, cols);
+  draw();
+}
+
+function draw() {
+  const dpr = devicePixelRatio, w = cv.clientWidth * dpr, h = cv.clientHeight * dpr;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const g = cv.getContext('2d'), css = getComputedStyle(document.documentElement);
+  g.clearRect(0, 0, w, h);
+  const mid = h / 2, amp = h / 2 - 22 * dpr;
+  const layers = which === 'enh' ? ['orig', 'enh'] : ['enh', 'orig'];
+  for (const k of layers) {
+    const p = peaks[k];
+    if (!p) continue;
+    const front = k === which;
+    g.fillStyle = css.getPropertyValue(k === 'enh' ? '--accent' : '--orig').trim();
+    g.globalAlpha = front ? 1 : (k === 'enh' ? 0.25 : 0.55);
+    const colW = w / p.length;
+    for (let i = 0; i < p.length; i++) {
+      const y = Math.max(dpr * 0.5, p[i] * amp);
+      g.fillRect(i * colW, mid - y, Math.max(1, colW - dpr * 0.5), y * 2);
+    }
+  }
+  g.globalAlpha = 1;
+  const d = duration();
+  if (d) {
+    const x = (pos() / d) * w;
+    g.fillStyle = css.getPropertyValue('--ink').trim();
+    g.fillRect(x - dpr / 2, 0, dpr, h);
+  }
+  $('#time').textContent = `${fmtTime(pos())} / ${fmtTime(d)}`;
+}
+
+function frame() {
+  if (playing && pos() >= duration()) { pause(); p0 = duration(); }
+  if (playing) draw();
+  requestAnimationFrame(frame);
+}
+
+let dragging = false;
+const timeAt = e => ((e.clientX - cv.getBoundingClientRect().left) / cv.clientWidth) * duration();
+wave.addEventListener('pointerdown', e => { if (!buf.orig || locked) return; dragging = true; wave.setPointerCapture(e.pointerId); seek(timeAt(e)); });
+wave.addEventListener('pointermove', e => {
+  if (buf.orig && !locked) $('#hover').textContent = fmtTime(Math.max(0, Math.min(duration(), timeAt(e))));
+  if (dragging) seek(timeAt(e));
+});
+wave.addEventListener('pointerup', () => { dragging = false; });
+wave.addEventListener('pointerleave', () => { $('#hover').textContent = ''; });
+new ResizeObserver(refreshPeaks).observe(cv);
+
+// --- status ---------------------------------------------------------------------
+
+async function loadOriginal(id) {
+  pause(); p0 = 0;
+  buf.orig = buf.enh = null;
+  refreshPeaks();
+  const b = await fetchBuffer(`/audio/original_${id}.wav`);
+  if (id !== fileId) return;
+  buf.orig = b;
+  $('#empty').hidden = true; $('#legend').hidden = false;
+  updateLock();
+  refreshPeaks();
+}
+
+async function loadEnhanced(v) {
+  const b = await fetchBuffer(`/audio/enhanced_${v}.wav`);
+  if (v !== version) return;
+  buf.enh = b;
+  if (playing) start(pos());
+  updateLock();
+  refreshPeaks();
+}
+
+function showStatus(s) {
+  const st = $('#state');
+  st.classList.toggle('err', s.state === 'error');
+  if (s.file) { $('#fname').textContent = s.file; document.title = `${s.file} · voice-enhance`; }
+  $('#fmeta').textContent = s.duration ? fmtTime(s.duration) : '';
+  if (s.state === 'working') {
+    st.textContent = `${s.stage || 'starting'} · ${Math.round(s.pct * 100)}%`;
+    $('#bar').style.width = `${s.pct * 100}%`;
+  } else {
+    $('#bar').style.width = '0';
+    st.textContent = s.state === 'error' ? s.error : s.state === 'ready' ? s.result : '';
+  }
+  if (s.state === 'error') $('#note').textContent = '';
+  else if (s.note) $('#note').textContent = s.note;
+  if (s.command) $('#cmd').textContent = s.command;
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    status = s;
+    showStatus(s);
+    updateLock();
+    if (s.file_id != null && s.file_id !== fileId) {
+      fileId = s.file_id; version = 0;
+      loadOriginal(fileId).catch(console.error);
+    }
+    if (s.state === 'ready' && s.file_id === fileId && s.version !== version) {
+      version = s.version;
+      loadEnhanced(version).catch(console.error);
+    }
+  } catch {}
+  setTimeout(poll, 300);
+}
+
+// --- files ------------------------------------------------------------------------
+
+$('#open').addEventListener('click', () => { if (!locked) post('/api/choose', { settings }); });
+
+let dragDepth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; if (!locked) $('#drop').classList.add('show'); });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#drop').classList.remove('show'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; $('#drop').classList.remove('show');
+  const f = e.dataTransfer.files[0];
+  if (!f || locked) return;
+  $('#fname').textContent = f.name;
+  $('#state').textContent = 'uploading…';
+  pendingJob = Infinity;
+  updateLock();
+  post('/api/upload', f, {
+    'Content-Type': 'application/octet-stream',
+    'X-Filename': encodeURIComponent(f.name),
+    'X-Settings': encodeURIComponent(JSON.stringify(settings)),
+  }).finally(() => { pendingJob = null; updateLock(); });  // the server is now 'working' on it
+});
+
+let savedPath = null, toastTimer;
+function toast(msg, path) {
+  savedPath = path;
+  $('#toast-msg').textContent = msg;
+  $('#reveal').hidden = !path;
+  $('#toast').classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 6000);
+}
+$('#save').addEventListener('click', async () => {
+  const r = await post('/api/save', { format: settings.format });
+  if (r.path) toast(`Saved ${r.path}`, r.path);
+  else if (r.error) toast(r.error);
+});
+$('#reveal').addEventListener('click', () => savedPath && post('/api/reveal', { path: savedPath }));
+$('#copy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('#cmd').textContent);
+  $('#copy').textContent = 'Copied';
+  setTimeout(() => { $('#copy').textContent = 'Copy'; }, 1200);
+});
+
+// --- keys -----------------------------------------------------------------------------
+
+$('#play').addEventListener('click', toggle);
+for (const b of $$('.ab button')) b.addEventListener('click', () => listen(b.dataset.k));
+addEventListener('keydown', e => {
+  const t = e.target;
+  if (locked) { if (e.code === 'Space' && t.tagName !== 'INPUT') e.preventDefault(); return; }
+  if (t.tagName === 'SELECT' || (t.tagName === 'INPUT' && t.type !== 'checkbox') || e.metaKey || e.ctrlKey) return;
+  if (e.code === 'Space') { e.preventDefault(); toggle(); }
+  else if (e.key === 'b' || e.key === 'B') listen(which === 'enh' ? 'orig' : 'enh');
+  else if (e.key === 'ArrowLeft') seek(pos() - 5);
+  else if (e.key === 'ArrowRight') seek(pos() + 5);
+});
+
+// --- start -------------------------------------------------------------------------------
+
+(async () => {
+  info = await (await fetch('/api/info')).json();
+  $('#ver').textContent = info.version;
+  settings = { ...info.defaults };
+  $('[data-key=backend] select').innerHTML = info.backends
+    .slice().sort((a, b) => (a === 'deepfilter' ? -1 : b === 'deepfilter' ? 1 : a === 'none' ? 1 : b === 'none' ? -1 : 0))
+    .map(b => `<option value="${b}">${BACKEND_LABELS[b] || b}</option>`).join('');
+  $('#format').innerHTML = info.formats.filter(f => f !== 'aif').map(f => `<option value="${f}">${f.toUpperCase()}</option>`).join('');
+  bindControls();
+  syncControls();
+  if (info.initial) post('/api/start', { settings });
+  poll();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
