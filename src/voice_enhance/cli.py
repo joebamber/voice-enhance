@@ -76,7 +76,7 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
             cache: dict | None = None, verbose: bool = False, rebuild_hf: bool = False,
             dry: float = 1.0, rebuild_above: float | None = None,
             repair_clipping: bool = True, protect_db: float = 0.0,
-            gate_db: float = 30.0) -> tuple[np.ndarray, str]:
+            gate_db: float = 30.0, ai_dereverb: float = 0.0) -> tuple[np.ndarray, str]:
     """`cache` (one dict per source file) keeps the slow steps between calls."""
     notes = []
     if repair_clipping:
@@ -109,6 +109,16 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
         # after the mix, so --mix can't bring the background voices back
         cleaned, closed = gate(cleaned, below_db=gate_db)
         note += f", gate closed {closed * 100:.0f}% of the time"
+    if ai_dereverb > 0:
+        # after the gate, so the whole voice is dereverbed (laughs and protected speech included);
+        # it keeps the recording's phase, so the strength is a plain blend with the input
+        from . import aidereverb
+        t = time.time()
+        prog.stage("aidereverb")
+        ai_key = key + (protect_db, guard and guard.strength, mix, gate_db)
+        wet, cached = memo(cache, "aidereverb", ai_key, lambda: aidereverb.run(cleaned))
+        cleaned = cleaned + ai_dereverb * (wet - cleaned)
+        note += ", AI dereverb (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
     if backend != "none" and dry > 0:
         prog.stage("dereverb")
         cleaned = dereverb(cleaned, dry)
@@ -117,15 +127,22 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
         # a rebuilt and an un-rebuilt version
         t = time.time()
         prog.stage("rebuild")
-        key += (protect_db, guard and guard.strength, mix, gate_db, dry, rebuild_above)
+        key += (protect_db, guard and guard.strength, mix, gate_db, ai_dereverb, dry, rebuild_above)
         (cleaned, what), cached = memo(cache, "rebuild", key, lambda: rebuild(cleaned, rebuild_above))
         note += f", {what} (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
     return cleaned, note
 
 
 def rebuild_wanted(args) -> bool:
-    """Studio mic generates its own top end from the voice below 8 kHz, so a rebuild before it is wasted."""
-    return args.rebuild and not args.studio
+    """Sidon, and StuPASE with no crossover, make the whole top end from the voice below
+    8 kHz, so a rebuild before them is wasted. With a crossover, the top end above it comes
+    from the recording, so it's rebuilt as usual."""
+    return args.rebuild and not (args.studio == "sidon" or (args.studio == "stupase" and not args.stupase_crossover))
+
+
+def stupase_rebuilds(args) -> bool:
+    """With no crossover StuPASE stops at 8 kHz, so the rebuild runs after it instead of before."""
+    return args.studio == "stupase" and not args.stupase_crossover and args.rebuild and clearvoice_available()
 
 
 def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool) -> list[str]:
@@ -135,11 +152,18 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
     st.append("cleanup")
     if backend != "none" and guard and guard.strength > 0:
         st.append("guard")
+    if args.ai_dereverb > 0:
+        st.append("aidereverb")
     if backend != "none" and args.dereverb > 0:
         st.append("dereverb")
     if rebuild_hf:
         st.append("rebuild")
-    return st + ["polish"] + (["studio"] if args.studio else []) + ["loudness"]
+    st.append("polish")
+    if args.studio:
+        st.append("studio")
+        if stupase_rebuilds(args):
+            st.append("rebuild")  # StuPASE stops at 8 kHz
+    return st + ["loudness"]
 
 
 def short(name: str, n: int = 28) -> str:
@@ -154,10 +178,14 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
         polish_stage(a, b, polish=not args.no_polish)
         if args.studio:
             # last of all, on the finished voice; only the level is set after it
-            from . import sidon
             prog.stage("studio")
             voice = load(b)
-            save_wav(sidon.run(voice), b)
+            if args.studio == "stupase":
+                from . import stupase
+                save_wav(stupase.run(voice, args.stupase_crossover or 0, rebuild_top=stupase_rebuilds(args)), b)
+            else:
+                from . import sidon
+                save_wav(sidon.run(voice), b)
         prog.stage("loudness")
         if args.lufs is not None:
             loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
@@ -198,14 +226,26 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
-    ap.add_argument("--studio", action="store_true",
+    ap.add_argument("--studio", action="store_const", const="sidon",
                     help="experimental: finish by re-synthesising the voice with Sidon, so it sounds like a close, high-quality "
                          "podcast mic. Runs after everything else (only the level is set after it); replaces the "
                          "rebuild. It can wobble or sound synthetic. Use -b none to give it the voice without AI "
                          "noise removal")
+    ap.add_argument("--stupase", dest="studio", action="store_const", const="stupase",
+                    help="experimental: like --studio, but with StuPASE, which re-synthesises the voice while following "
+                         "the recording's own spectrum, to keep it sounding like the speaker. It works up to 8 kHz; "
+                         "the recording supplies everything above --stupase-crossover")
+    ap.add_argument("--stupase-crossover", type=float, default=5000.0, metavar="HZ",
+                    help="--stupase: below this StuPASE makes the voice, above it the recording supplies it, since "
+                         "StuPASE blurs sibilants (an 's' comes out like an 'f'). 0 = all StuPASE, with the rebuild "
+                         "regenerating everything above 8 kHz (default 5000)")
     ap.add_argument("--declip", action="store_true",
                     help="repair clipped (flat-topped) peaks before cleanup (default off)")
     ap.add_argument("--no-declip", dest="declip", action="store_false", help=argparse.SUPPRESS)  # the old default
+    ap.add_argument("--ai-dereverb", type=float, default=0.0, metavar="0-1",
+                    help="experimental: remove room reverb with an AI model (anvuew's dereverb_room), after the "
+                         "cleanup. It keeps the recording's own voice (no re-synthesis); below 1 blends it with the "
+                         "reverberant version (default 0 = off)")
     ap.add_argument("--dereverb", type=float, default=0.0, metavar="0-1",
                     help="extra DSP tail suppression after the AI (default 0 = off; the AI handles reverb)")
     ap.add_argument("--compare", action="store_true",
@@ -230,12 +270,18 @@ def parser() -> argparse.ArgumentParser:
 
 def configure(args) -> None:
     """Check the settings and apply the ones the engines read globally."""
-    if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1:
-        raise SystemExit("--mix and --laughter-guard must be between 0 and 1")
+    if not 0 <= args.mix <= 1 or not 0 <= args.laughter_guard <= 1 or not 0 <= args.ai_dereverb <= 1:
+        raise SystemExit("--mix, --laughter-guard and --ai-dereverb must be between 0 and 1")
     from . import backends as _b
     _b.DF_SETTINGS["max_reduction_db"] = args.max_reduction
-    from . import sidon
-    if args.studio and not sidon.available():
+    from . import aidereverb, sidon, stupase
+    if args.ai_dereverb > 0 and not aidereverb.available():
+        raise SystemExit("--ai-dereverb needs the beartype, rotary-embedding-torch and einops packages. Reinstall with:\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
+    if args.studio == "stupase" and not stupase.available():
+        raise SystemExit("--stupase needs the x-transformers and torchdiffeq packages. Reinstall with:\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
+    if args.studio == "sidon" and not sidon.available():
         raise SystemExit("--studio needs the transformers package. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
 
@@ -306,7 +352,7 @@ def main(argv: list[str] | None = None) -> None:
                 with prog.progress(short(f"{n}_{label}", 30),
                                    stages_for(args, b, g, rebuild_wanted(args), decode=False), backend=b):
                     y, note = process(audio, b, mix=args.mix, guard=g, cache=cache,
-                                      verbose=args.verbose, rebuild_hf=rebuild_wanted(args), dry=args.dereverb,
+                                      verbose=args.verbose, rebuild_hf=rebuild_wanted(args), dry=args.dereverb, ai_dereverb=args.ai_dereverb,
                                       repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
                                       gate_db=args.gate)
                     result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
@@ -327,7 +373,7 @@ def main(argv: list[str] | None = None) -> None:
             prog.stage("decode")
             audio = load(src)
             y, note = process(audio, args.backend, mix=args.mix, guard=guard, cache=cache,
-                              rebuild_hf=rebuild_wanted(args), verbose=args.verbose, dry=args.dereverb, repair_clipping=args.declip, protect_db=args.protect,
+                              rebuild_hf=rebuild_wanted(args), verbose=args.verbose, dry=args.dereverb, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip, protect_db=args.protect,
                               rebuild_above=args.rebuild_above, gate_db=args.gate)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)

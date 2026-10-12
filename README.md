@@ -20,12 +20,12 @@ uv tool install --python 3.11 . --force --reinstall-package voice-enhance --over
 voice-enhance --gui
 ```
 
-Opens the app in your browser. It runs on your Mac like the command line. Drop a recording onto the page (or click **Open…**), and it's cleaned up with the default settings.
+Opens the app in your browser. It runs on your Mac like the command line. Drop a recording onto the page (or click **Open…**) to load it, choose your settings, then press **Process** (⌘↩).
 
 - **A/B:** press **B** (or click **Original** / **Enhanced**) to switch between the original and the cleaned-up version at the same spot while it plays. **Space** plays and pauses, the arrow keys jump 5 s, and clicking the waveform seeks.
 - **The waveform** is drawn in dB, so you can see the noise between words and what the gate removes.
-- **Sliders** re-render when you let go. Only the settings marked *re-runs AI* (AI noise removal, max reduction, declip) redo the AI cleanup. The others reuse it and update in about a second (the rebuild re-runs too, on band-limited recordings). With **Studio mic** on, every change also re-runs Sidon at the end (about 6 minutes per hour of audio). Double-click a slider to reset it.
-- **Save…** writes the version you're hearing in the format you pick, next to the original by default.
+- **Settings** only take effect when you press **Process**, so you can change several first; until then, Enhanced plays the previous version. Only the settings marked *re-runs AI* (AI noise removal, max reduction, declip) redo the AI cleanup. The others reuse it and process in about a second (the rebuild re-runs too, on band-limited recordings). With **Studio mic** on, every change also re-runs its model at the end (StuPASE: about 12 minutes per hour of audio; Sidon: about 6). Moving the StuPASE crossover doesn't re-run it. Double-click a slider to reset it.
+- **Save…** writes the version you're hearing in the format you pick, next to the original by default. The suggested name starts with the settings that differ from the defaults, e.g. `[noise-none aidereverb0.8] ep_enhanced.wav`.
 - **The command line** at the bottom gives the same settings as a `voice-enhance` command, for batch-processing a folder.
 
 `voice-enhance --gui ep.wav` opens a file straight away. Keep the Terminal window open while you use the app, and press Ctrl+C there to quit.
@@ -37,8 +37,11 @@ Opens the app in your browser. It runs on your Mac like the command line. Drop a
 | `voice-enhance ep.wav` | Removes noise with DeepFilterNet (natural-sounding AI cleanup), protects laughter, rebuilds missing high frequencies if the recording is band-limited below 12 kHz (e.g. phone or Zoom), and silences anything far quieter than the speaker. The recording keeps its own tone (no EQ). There's no compression or loudness processing: the output stays at the source level. Writes `ep_enhanced.wav` next to the input. Drag a file into Terminal to paste its path. | |
 | `--no-rebuild` | Skips the rebuild. | Rebuild on |
 | `--rebuild-above 8000` | Forces the rebuild to regenerate everything above that frequency, even on full-band audio. | Auto-detected |
+| `--ai-dereverb 1` | *Experimental.* Removes room reverb with an AI model ([anvuew's dereverb_room](https://huggingface.co/anvuew/dereverb_room), a BS-Roformer trained on single voices with simulated room reverb), after the cleanup and gate. It masks the reverb out of the recording rather than re-synthesising the voice, so the voice stays your own; values below 1 blend some room back. In the app, changing the strength doesn't re-run it. The weights (~120 MB) are GPL-3.0. | 0 (off) |
 | `--dereverb 0.5` | Adds DSP reverb-tail suppression on top of the AI. | 0 (off) |
 | `--studio` | *Experimental.* Finishes by re-synthesising the voice with [Sidon](https://huggingface.co/sarulab-speech/sidon-v0.1) so it sounds like a close, high-quality podcast mic. It's the last step: everything else (cleanup, gate, polish) runs first, and only the output level is set after it. It hears the voice up to 8 kHz and generates the rest, so it replaces the rebuild. It can wobble or sound synthetic, and it can't be layered with the original (its waveform is new, so the two sound doubled). About 6 minutes per hour of audio. Add `-b none` to give it the voice without AI noise removal. | Off |
+| `--stupase` | *Experimental.* Like `--studio`, but with [StuPASE](https://huggingface.co/cisco-ai/stupase) (Cisco, Apache 2.0), which is built to keep the speaker's own voice: it re-synthesises the voice while following the recording's own spectrum. It works at 16 kHz and blurs sibilants (an S comes out like an F), so by default it only makes the voice below 5 kHz and the recording supplies everything above: S, T and breath. Like Sidon, it can't be layered full-band with the original. About 12 minutes per hour of audio. | Off |
+| `--stupase-crossover 4000` | Where `--stupase` hands over to the recording. 0 = all StuPASE, with the rebuild regenerating everything above 8 kHz. | 5000 Hz |
 | `--declip` | Repairs clipped (flat-topped) peaks before cleanup. | Off |
 | `--protect 22` | Turns on speech protection: speech this far above the room noise comes from the original, noise and all, so the AI can't duck loud syllables. Use it if loud words dip in level. Higher values let the AI process more. | 0 (off) |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. | No cap |

@@ -13,8 +13,8 @@ from typing import Callable
 
 from tqdm import tqdm
 
-WEIGHTS = {"decode": 1, "declip": 1, "cleanup": 6, "guard": 3, "dereverb": 1, "rebuild": 80, "studio": 10, "polish": 4, "loudness": 4}
-LABELS = {"decode": "reading", "declip": "fixing clipping", "cleanup": "cleaning up", "guard": "laughter guard", "dereverb": "dereverb", "rebuild": "rebuilding", "studio": "studio mic",
+WEIGHTS = {"decode": 1, "declip": 1, "cleanup": 6, "guard": 3, "dereverb": 1, "aidereverb": 30, "rebuild": 80, "studio": 10, "polish": 4, "loudness": 4}
+LABELS = {"decode": "reading", "declip": "fixing clipping", "cleanup": "cleaning up", "guard": "laughter guard", "dereverb": "dereverb", "aidereverb": "AI dereverb", "rebuild": "rebuilding", "studio": "studio mic",
           "polish": "polishing", "loudness": "writing"}
 
 _active: "Progress | None" = None

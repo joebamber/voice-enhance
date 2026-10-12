@@ -18,6 +18,16 @@ dependencies = [
     "clearvoice>=0.1.2",
     # Sidon (--studio): its feature front end. Weights download from Hugging Face on first use.
     "transformers>=4.40",
+    # StuPASE (--stupase): its flow-matching model (code vendored in stupase_model/).
+    # Weights (~2.2 GB) download from Hugging Face on first use.
+    "x-transformers==2.14.2",
+    "torchdiffeq>=0.2.5",
+    # AI dereverb (--ai-dereverb): its BS-Roformer (code vendored in roformer/).
+    # Weights (~120 MB) download from Hugging Face on first use.
+    "beartype>=0.18",
+    "rotary-embedding-torch>=0.5",
+    "einops>=0.7",
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]

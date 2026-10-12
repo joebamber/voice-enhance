@@ -24,7 +24,7 @@ from urllib.parse import unquote
 from . import __version__
 from . import cli
 from . import progress as prog
-from . import sidon
+from . import aidereverb, sidon, stupase
 from .audio import ENCODERS, SR, load, save_wav
 from .backends import clearvoice_available
 from .guard import GuardSettings
@@ -34,28 +34,53 @@ DIALOGS = Path(__file__).with_name("dialogs.js")
 
 # settings key (argparse dest) -> flag; only values that differ from the CLI defaults are passed
 FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "mix": "--mix",
-         "gate": "--gate", "laughter_guard": "--laughter-guard", "dereverb": "--dereverb", "lufs": "--lufs",
-         "format": "-f"}
+         "gate": "--gate", "laughter_guard": "--laughter-guard", "dereverb": "--dereverb", "ai_dereverb": "--ai-dereverb", "lufs": "--lufs",
+         "format": "-f", "stupase_crossover": "--stupase-crossover"}
 OFF_SWITCHES = {"rebuild": "--no-rebuild"}  # flag given when False
-ON_SWITCHES = {"declip": "--declip", "studio": "--studio"}  # flag given when True
-DEFAULTS = {k: v for k, v in vars(cli.parser().parse_args([])).items() if k in FLAGS or k in OFF_SWITCHES or k in ON_SWITCHES}
+ON_SWITCHES = {"declip": "--declip"}  # flag given when True
+STUDIO = {"sidon": "--studio", "stupase": "--stupase"}  # studio model -> flag (None = off)
+DEFAULTS = {k: v for k, v in vars(cli.parser().parse_args([])).items()
+            if k in FLAGS or k in OFF_SWITCHES or k in ON_SWITCHES or k == "studio"}
 
 
 def to_argv(settings: dict) -> list[str]:
     argv: list[str] = []
     for key, flag in FLAGS.items():
         v = settings.get(key, DEFAULTS[key])
-        if v is not None and v != DEFAULTS[key]:
+        if v is not None and v != DEFAULTS[key] and (key != "stupase_crossover" or settings.get("studio") == "stupase"):
             argv += [flag, f"{v:g}" if isinstance(v, float) else str(v)]
     argv += [f for k, f in OFF_SWITCHES.items() if not settings.get(k, True)]
     argv += [f for k, f in ON_SWITCHES.items() if settings.get(k, False)]
+    if settings.get("studio") in STUDIO:
+        argv.append(STUDIO[settings["studio"]])
     return argv
 
 
+# short names for the settings in saved file names
+LABELS = {"-b": "noise", "--max-reduction": "maxred", "--laughter-guard": "laugh", "--ai-dereverb": "aidereverb",
+          "--stupase-crossover": "xover", "--no-rebuild": "norebuild", "--studio": "sidon"}
+
+
+def settings_label(settings: dict) -> str:
+    """The settings that differ from the defaults, e.g. "noise-none xover4000 stupase", for file names."""
+    argv = to_argv(settings)
+    if "-f" in argv:  # the format is already the extension
+        i = argv.index("-f")
+        del argv[i:i + 2]
+    words: list[str] = []
+    for a in argv:
+        if a.startswith("-") and not a.lstrip("-.").replace(".", "").isdigit():
+            words.append(LABELS.get(a, a.lstrip("-")))
+        else:
+            words[-1] += a if a.lstrip("-.").replace(".", "").isdigit() else f"-{a}"
+    return " ".join(words) or "defaults"
+
+
 def job_key(job: tuple[int, dict]) -> tuple:
-    """What a render depends on: the output format only matters when saving."""
+    """What a render depends on: the output format only matters when saving.
+    No settings means just load the file."""
     fid, settings = job
-    return fid, sorted((k, v) for k, v in settings.items() if k != "format")
+    return fid, None if settings is None else sorted((k, v) for k, v in settings.items() if k != "format")
 
 
 class NewFile(Exception):
@@ -66,12 +91,14 @@ class Session:
     def __init__(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="voice-enhance-gui-"))
         self.cond = threading.Condition()
-        self.wanted: tuple[int, dict] | None = None  # (file id, settings) to render next
+        self.wanted: tuple[int, dict | None] | None = None  # (file id, settings) to render next; None = just load it
         self.running: tuple | None = None  # job_key of the render in progress
         self.done: tuple | None = None  # job_key of the last finished render
         self.files: dict[int, tuple[Path, Path | None]] = {}  # id -> (source, folder to save next to, None if uploaded)
         self.next_id = 1
         self.loaded: int | None = None
+        self.rendered: int | None = None  # file id the latest render is of
+        self.rendered_settings: dict = {}  # and the settings it used
         self.audio = None
         self.ref_lufs = float("nan")
         self.cache: dict = {}
@@ -85,22 +112,27 @@ class Session:
     # --- requests from the page ---------------------------------------------
 
     def open(self, path: Path, folder: Path | None, settings: dict | None = None) -> None:
+        """Loads the file so the original can be played; it's processed when the page asks."""
         with self.cond:
             fid = self.next_id
             self.next_id += 1
             self.files[fid] = (path, folder)
             self.status.update(file=path.name, file_id=None, state="working", stage="reading", pct=0.0,
-                               error="", note="", result="", queued=self.status["queued"] + 1)
-            self.wanted = (fid, settings or (self.wanted[1] if self.wanted else dict(DEFAULTS)))
+                               error="", note="", result="", queued=self.status["queued"] + 1,
+                               command=self._command(fid, settings or dict(DEFAULTS)))
+            self.wanted = (fid, None)
             self.cond.notify()
 
-    def apply(self, settings: dict) -> int | None:
-        """Queues a render if the settings change the sound; returns its job number."""
+    def apply(self, settings: dict, process: bool = True) -> int | None:
+        """Queues a render if the settings change the sound; returns its job number.
+        Without `process`, only updates the command line shown on the page."""
         with self.cond:
             if self.wanted is None:
                 return None
-            self.wanted = (self.wanted[0], settings)
             self.status.update(command=self._command(self.wanted[0], settings))
+            if not process:
+                return None
+            self.wanted = (self.wanted[0], settings)
             if job_key(self.wanted) == (self.running or self.done):
                 return None
             self.status.update(state="working", stage="queued", pct=0.0, error="", queued=self.status["queued"] + 1)
@@ -119,11 +151,14 @@ class Session:
             with self.cond:
                 while self.wanted is None or job_key(self.wanted) == self.done:
                     self.cond.wait()
-                job = (self.wanted[0], dict(self.wanted[1]))
+                job = (self.wanted[0], self.wanted[1] and dict(self.wanted[1]))
                 n = self.status["queued"]
                 self.running = job_key(job)
             try:
-                self._run(*job)
+                if job[1] is None:
+                    self._open(job[0])
+                else:
+                    self._run(*job)
             except NewFile:
                 continue
             except BaseException as e:  # SystemExit from bad settings included
@@ -142,6 +177,24 @@ class Session:
             self.status.update(stage=label, pct=frac)
         return on_move
 
+    def _load(self, fid: int) -> None:
+        prog.stage("decode")
+        self.loaded, self.audio, self.cache = None, load(self.files[fid][0]), {}
+        self.ref_lufs = cli.source_lufs(self.audio)
+        save_wav(self.audio, self.tmp / f"original_{fid}.wav")
+        self.loaded = fid
+        self.status.update(file_id=fid, duration=self.audio.size / SR)
+
+    def _open(self, fid: int) -> None:
+        self.status.update(state="working", error="")
+        prog.listener = self._progress(fid)
+        try:
+            with prog.progress(cli.short(self.files[fid][0].stem), ["decode"]):
+                self._load(fid)
+        finally:
+            prog.listener = None
+        self.status.update(state="loaded", stage="", pct=0.0, note="", result="")
+
     def _run(self, fid: int, settings: dict) -> None:
         argv = to_argv(settings)
         args = cli.parser().parse_args(argv)
@@ -156,14 +209,9 @@ class Session:
             with prog.progress(cli.short(src.stem), cli.stages_for(args, args.backend, guard, rebuild_hf, decode=new_file),
                                backend=args.backend):
                 if new_file:
-                    prog.stage("decode")
-                    self.loaded, self.audio, self.cache = None, load(src), {}
-                    self.ref_lufs = cli.source_lufs(self.audio)
-                    save_wav(self.audio, self.tmp / f"original_{fid}.wav")
-                    self.loaded = fid
-                    self.status.update(file_id=fid, duration=self.audio.size / SR)
+                    self._load(fid)
                 y, note = cli.process(self.audio, args.backend, mix=args.mix, guard=guard, cache=self.cache,
-                                      rebuild_hf=rebuild_hf, dry=args.dereverb, repair_clipping=args.declip,
+                                      rebuild_hf=rebuild_hf, dry=args.dereverb, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip,
                                       protect_db=args.protect, rebuild_above=args.rebuild_above, gate_db=args.gate)
                 version = self.status["version"] + 1
                 dst = self.tmp / f"enhanced_{version}.wav"
@@ -171,6 +219,7 @@ class Session:
         finally:
             prog.listener = None
         self.renders.append(dst)
+        self.rendered, self.rendered_settings = fid, settings
         while len(self.renders) > 3:  # keep the one playing and the one being saved
             self.renders.pop(0).unlink(missing_ok=True)
         self.status.update(state="ready", stage="done", pct=1.0, note=note, version=version,
@@ -180,14 +229,14 @@ class Session:
 
     def save(self, fmt: str) -> dict:
         version, fid = self.status["version"], self.status["file_id"]
-        if not version or fid is None:
-            return {"error": "Nothing rendered yet"}
+        if not version or fid is None or self.rendered != fid:
+            return {"error": "Nothing processed yet"}
         ext = "." + fmt.lower().lstrip(".")
         if ext not in ENCODERS:
             return {"error": f"Unsupported format {fmt}"}
         src, folder = self.files[fid]
         where = folder or Path.home() / "Desktop"
-        dst = self.dialogs.choose_save(f"{src.stem}_enhanced{ext}", where)
+        dst = self.dialogs.choose_save(f"[{settings_label(self.rendered_settings)}] {src.stem}_enhanced{ext}", where)
         if dst is None:
             return {"cancelled": True}
         if dst.suffix.lower() not in ENCODERS:
@@ -297,8 +346,8 @@ def handler(session: Session, port: int, initial: Path | None):
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             if path == "/api/info":
                 return self._json({"version": __version__, "defaults": DEFAULTS,
-                                   "rebuild_available": clearvoice_available(),
-                                   "studio_available": sidon.available(), "formats": [e[1:] for e in ENCODERS],
+                                   "rebuild_available": clearvoice_available(), "ai_dereverb_available": aidereverb.available(),
+                                   "studio_available": {"sidon": sidon.available(), "stupase": stupase.available()}, "formats": [e[1:] for e in ENCODERS],
                                    "initial": bool(initial)})
             if path == "/api/status":
                 return self._json(session.status)
@@ -341,7 +390,8 @@ def handler(session: Session, port: int, initial: Path | None):
                 session.open(dst, None, settings)
                 return self._json({"ok": True})
             if path == "/api/apply":
-                return self._json({"job": session.apply(self._body()["settings"])})
+                body = self._body()
+                return self._json({"job": session.apply(body["settings"], body.get("process", True))})
             if path == "/api/save":
                 return self._json(session.save(self._body().get("format", "wav")))
             if path == "/api/reveal":

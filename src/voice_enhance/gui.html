@@ -91,7 +91,7 @@
   .player.busy canvas, .player.busy .legend, .player.busy .time { opacity: .4; }
   .card { transition: opacity .15s; }
   .lockmsg { margin: 16px 2px -4px; color: var(--muted); font-size: 13px; display: flex; gap: 8px; align-items: center; }
-  .lockmsg::before {
+  .lockmsg.busy::before {
     content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent;
     animation: spin .8s linear infinite; flex: none;
   }
@@ -213,6 +213,9 @@
       <div class="ctl" data-key="laughter_guard" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Laughter guard<span class="ai" title="Runs a second, gentle DeepFilterNet pass for laughs.">✦ AI</span></label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small>Protects laughs from the cleanup. Lower it if noise comes and goes around laughs.</small></div>
+      <div class="ctl" data-key="ai_dereverb"><label class="name"><input type="checkbox" class="sw">AI dereverb<span class="ai" title="A neural network (anvuew's dereverb_room) removes the room's echo.">✦ AI</span><span class="slow" title="New: tuned on vocals, not tested much on speech.">experimental</span></label><output></output>
+        <input type="range" min="0.05" max="1" step="0.05">
+        <small id="ai-dereverb-hint">Removes room echo while keeping the recording's own voice (nothing is re-synthesised). Below 100% blends some of the room back. Slow on long files; changing its strength doesn't re-run it.</small></div>
       <div class="ctl" data-key="dereverb" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Dereverb</label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small>Extra suppression of room echo tails, on top of the AI.</small></div>
@@ -224,8 +227,12 @@
         <small id="rebuild-hint">Only acts on band-limited recordings (phone, Zoom): regenerates the treble missing below 12 kHz. Slow on long files.</small></div>
       <div class="ctl" data-key="declip"><label class="name"><input type="checkbox" class="sw">Repair clipped peaks<span class="slow" title="Repairs before the AI cleanup, so changing it re-runs that">re-runs AI</span></label><span></span>
         <small>Rounds off peaks that hit the recorder's ceiling (flat-topped waveform).</small></div>
-      <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="Sidon, a neural network, re-synthesises the voice.">✦ AI</span><span class="slow" title="Early-stage model: it can wobble or sound synthetic.">experimental</span></label><span></span>
-        <small id="studio-hint">The last step: Sidon's AI re-synthesises the finished voice as if recorded close on a high-quality mic. It can wobble or sound synthetic. About 6 minutes per hour of audio, re-run on every change. Turn AI noise removal off to give it the voice without it.</small></div>
+      <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="A neural network re-synthesises the voice.">✦ AI</span><span class="slow" title="Early-stage models: they can wobble or sound synthetic.">experimental</span></label><span></span>
+        <select><option value="stupase">StuPASE</option><option value="sidon">Sidon</option></select>
+        <small id="studio-hint"></small></div>
+      <div class="ctl" data-key="stupase_crossover"><label class="name"><input type="checkbox" class="sw">StuPASE crossover</label><output></output>
+        <input type="range" min="1500" max="7500" step="250">
+        <small>StuPASE makes the voice below this, and the recording supplies everything above (S, T, breath), since StuPASE blurs them: an S comes out like an F. Off: all StuPASE, with the rebuild adding the top end.</small></div>
     </section>
 
   </div>
@@ -241,6 +248,7 @@
     <label>Loudness
       <select id="lufs"><option value="">Source level</option><option value="-16">−16 LUFS</option><option value="-19">−19 LUFS</option><option value="-23">−23 LUFS</option></select></label>
     <label>Format <select id="format"></select></label>
+    <button id="process" disabled title="Process the file with these settings (⌘↩)">Process</button>
     <button class="primary" id="save" disabled>Save…</button>
   </div>
 </footer>
@@ -263,17 +271,24 @@ const SPECS = {
   backend: { off: 'none', on: 'deepfilter' },  // -b deepfilter / -b none
   rebuild: { off: false, on: true },
   declip: { off: false, on: true },
-  studio: { off: false, on: true },
+  studio: { off: null, on: 'stupase' },
+  stupase_crossover: { fmt: v => `${(v / 1000).toFixed(v % 1000 ? 2 : 0)} kHz`, off: 0, on: 5000 },
   max_reduction: { fmt: v => `${v} dB`, off: null, on: 12 },
   mix: { fmt: v => `${Math.round(v * 100)}%` },
   protect: { fmt: v => `${v} dB`, off: 0, on: 22 },
   gate: { fmt: v => `${v} dB`, off: 0, on: 30 },
   laughter_guard: { fmt: v => v.toFixed(2), off: 0, on: 0.85 },
   dereverb: { fmt: v => v.toFixed(2), off: 0, on: 0.5 },
+  ai_dereverb: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 1 },
 };
 
 let info, settings, status = {}, fileId = null, version = 0;
 const REBUILD_HINT = $('#rebuild-hint').textContent;
+const STUDIO_HINT = {
+  stupase: 'The last step: StuPASE\'s AI re-synthesises the finished voice as if recorded close on a high-quality mic, following the recording\'s own spectrum to keep it sounding like the speaker. It works up to 8 kHz; the rebuild then adds the top end. About 12 minutes per hour of audio plus the rebuild, re-run on every change.',
+  sidon: 'The last step: Sidon\'s AI re-synthesises the finished voice as if recorded close on a high-quality mic. It can wobble or sound synthetic. About 6 minutes per hour of audio, re-run on every change.',
+};
+const STUDIO_NEEDS = { stupase: 'the x-transformers and torchdiffeq packages', sidon: 'the transformers package' };
 const lastOn = {};  // value each switched-off setting had, to come back to
 
 // --- settings ---------------------------------------------------------------
@@ -285,7 +300,7 @@ function syncControls() {
     const on = !sw || v !== spec.off;
     if (sw) { sw.checked = on; el.classList.toggle('off', !on); }
     if (range && on) { range.value = v; $('output', el).textContent = (spec.fmt || String)(v); }
-    if (sel) sel.value = typeof v === 'boolean' ? (v ? '1' : '0') : v;
+    if (sel && on) sel.value = typeof v === 'boolean' ? (v ? '1' : '0') : v;
     if (box) box.checked = !!v;
     if (el.dataset.show) {
       const ok = el.dataset.show.split(' ').includes(settings.backend);
@@ -295,22 +310,45 @@ function syncControls() {
   }
   $('#lufs').value = settings.lufs == null ? '' : String(settings.lufs);
   $('#format').value = settings.format;
-  if (!info.studio_available) { $('[data-key=studio] .sw').disabled = true; $('#studio-hint').textContent = 'Needs the transformers package: reinstall voice-enhance.'; }
-  const studioOn = settings.studio;
-  $('[data-key=rebuild] .sw').disabled = !info.rebuild_available || studioOn;
-  $('[data-key=rebuild]').classList.toggle('disabled', studioOn);
-  $('#rebuild-hint').textContent = studioOn ? 'Skipped: Studio mic generates its own high frequencies.'
+  if (!info.ai_dereverb_available) {
+    $('[data-key=ai_dereverb] .sw').disabled = true;
+    $('#ai-dereverb-hint').textContent = 'Needs the beartype, rotary-embedding-torch and einops packages: reinstall voice-enhance.';
+  }
+  const studio = settings.studio, model = studio || $('[data-key=studio] select').value;
+  $('[data-key=studio] select').hidden = !studio;
+  $('#studio-hint').textContent = info.studio_available[model] ? STUDIO_HINT[model] + ' Turn AI noise removal off to give it the voice without it.'
+    : `Needs ${STUDIO_NEEDS[model]}: reinstall voice-enhance.`;
+  if (!Object.values(info.studio_available).some(Boolean)) $('[data-key=studio] .sw').disabled = true;
+  $('[data-key=stupase_crossover]').classList.toggle('hidden', studio !== 'stupase');
+  // Sidon makes its own top end; StuPASE with no crossover stops at 8 kHz and runs the rebuild after it
+  const fullStupase = studio === 'stupase' && !settings.stupase_crossover;
+  const noRebuild = studio === 'sidon';
+  $('[data-key=rebuild] .sw').disabled = !info.rebuild_available || noRebuild;
+  $('[data-key=rebuild]').classList.toggle('disabled', noRebuild);
+  $('#rebuild-hint').textContent = noRebuild ? 'Skipped: Sidon generates its own high frequencies.'
+    : fullStupase ? 'Runs after StuPASE, to regenerate everything above 8 kHz.'
     : !info.rebuild_available ? 'Needs ClearerVoice, which isn\'t installed.' : REBUILD_HINT;
 }
 
-async function change(k, v) {
+// Changing a setting only updates the page and the command line: nothing is processed
+// until Process is pressed, so several settings can be changed first.
+function change(k, v) {
   settings[k] = v;
   syncControls();
-  if (fileId == null) return;
-  if (k === 'format') return void post('/api/apply', { settings });  // only used when saving: never re-renders
+  updateLock();
+  if (fileId != null) post('/api/apply', { settings, process: false });
+}
+
+const soundKey = s => JSON.stringify(Object.entries(s).filter(([k]) => k !== 'format').sort());
+let processed = null;  // soundKey of the settings last sent to Process, for this file
+const dirty = () => fileId != null && processed !== soundKey(settings);
+
+async function processFile() {
+  if (locked || !dirty()) return;
+  processed = soundKey(settings);
   pendingJob = Infinity;  // locked until the server says which render this started
   updateLock();
-  const r = await post('/api/apply', { settings });
+  const r = await post('/api/apply', { settings, process: true });
   pendingJob = r.job ?? null;
   updateLock();
 }
@@ -326,14 +364,21 @@ function updateLock() {
   $('.player').classList.toggle('busy', locked);
   $('#settings').disabled = locked;
   for (const id of ['#open', '#reset', '#lufs', '#format', '#copy']) $(id).disabled = locked;
-  for (const b of $$('.ab button')) b.disabled = locked;
+  for (const b of $$('.ab button')) b.disabled = locked || (b.dataset.k === 'enh' && !buf.enh);
   $('#play').disabled = locked || !buf.orig;
   $('#save').disabled = locked || !buf.enh;
+  const d = dirty();
+  $('#process').disabled = locked || !d;
+  $('#process').classList.toggle('primary', d);
+  $('#save').classList.toggle('primary', !d);
   const msg = $('#lockmsg');
-  msg.hidden = !locked;
-  msg.textContent = buf.enh
-    ? 'Rendering with the new settings. Everything unlocks when it\'s ready.'
-    : 'Processing. Everything unlocks when it\'s ready.';
+  msg.textContent = locked ? (buf.enh ? 'Rendering with the new settings. Everything unlocks when it\'s ready.'
+                                      : 'Processing. Everything unlocks when it\'s ready.')
+    : !d ? ''
+    : buf.enh ? 'Settings changed: press Process to hear them. Enhanced is still the previous version.'
+    : 'Choose your settings, then press Process.';
+  msg.hidden = !msg.textContent;
+  msg.classList.toggle('busy', locked);  // spinner only while it's working
 }
 
 function bindControls() {
@@ -495,6 +540,8 @@ async function loadOriginal(id) {
   pause(); p0 = 0;
   buf.orig = buf.enh = null;
   refreshPeaks();
+  processed = null;
+  listen('orig');  // nothing to hear on Enhanced until it's processed
   const b = await fetchBuffer(`/audio/original_${id}.wav`);
   if (id !== fileId) return;
   buf.orig = b;
@@ -506,6 +553,7 @@ async function loadOriginal(id) {
 async function loadEnhanced(v) {
   const b = await fetchBuffer(`/audio/enhanced_${v}.wav`);
   if (v !== version) return;
+  if (!buf.enh) listen('enh');  // the file's first render
   buf.enh = b;
   if (playing) start(pos());
   updateLock();
@@ -594,13 +642,15 @@ $('#copy').addEventListener('click', async () => {
 // --- keys -----------------------------------------------------------------------------
 
 $('#play').addEventListener('click', toggle);
+$('#process').addEventListener('click', processFile);
 for (const b of $$('.ab button')) b.addEventListener('click', () => listen(b.dataset.k));
 addEventListener('keydown', e => {
   const t = e.target;
   if (locked) { if (e.code === 'Space' && t.tagName !== 'INPUT') e.preventDefault(); return; }
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); return void processFile(); }
   if (t.tagName === 'SELECT' || (t.tagName === 'INPUT' && t.type !== 'checkbox') || e.metaKey || e.ctrlKey) return;
   if (e.code === 'Space') { e.preventDefault(); toggle(); }
-  else if (e.key === 'b' || e.key === 'B') listen(which === 'enh' ? 'orig' : 'enh');
+  else if ((e.key === 'b' || e.key === 'B') && buf.enh) listen(which === 'enh' ? 'orig' : 'enh');
   else if (e.key === 'ArrowLeft') seek(pos() - 5);
   else if (e.key === 'ArrowRight') seek(pos() + 5);
 });
