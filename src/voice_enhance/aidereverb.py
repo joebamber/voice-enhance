@@ -49,12 +49,17 @@ def _load():
 
 def run(audio: np.ndarray) -> np.ndarray:
     """48 kHz mono in, the same with the room reverb removed (fully: blend for less)."""
+    from . import accel
+    if not audio.size or not np.any(audio):
+        return audio.copy()
+    return accel.attempt("AI dereverb", lambda dev: _run(audio, dev))
+
+
+def _run(audio: np.ndarray, dev) -> np.ndarray:
     import torch
     import torchaudio.functional as AF
     from . import progress
-    if not audio.size or not np.any(audio):
-        return audio.copy()
-    model = _load()
+    model = _load().to(dev)
     x = AF.resample(torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)), SR, FS)
     n = x.numel()
     out, weight = torch.zeros(n), torch.zeros(n)
@@ -65,7 +70,7 @@ def run(audio: np.ndarray) -> np.ndarray:
         for i, s in enumerate(starts):
             part = x[s: s + CHUNK]
             m = part.numel()
-            y = model(torch.nn.functional.pad(part, (0, CHUNK - m)).view(1, 1, -1)).reshape(-1)[:m]
+            y = model(torch.nn.functional.pad(part, (0, CHUNK - m)).view(1, 1, -1).to(dev)).reshape(-1)[:m].cpu()
             w = torch.ones(m)
             if s > 0:
                 w[:FADE] = ramp[:m]

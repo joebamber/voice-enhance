@@ -22,8 +22,8 @@ from functools import lru_cache
 
 import numpy as np
 
-from . import silence
-from .audio import SR, stitch
+from . import accel, silence
+from .audio import SR, spans, stitch
 
 REPO = "sarulab-speech/sidon-v0.1"
 # The demo uses 96 s chunks, but w2v-BERT's attention memory grows with the square
@@ -73,7 +73,7 @@ def run(audio: np.ndarray, follow: float = 0.0, lift_db: float = 0.0) -> np.ndar
     `lift_db`: raise quiet words by up to this much for Sidon, which stumbles and sounds
     more robotic on them, then lower them back (see _lift_gain)."""
     import hashlib
-    key = (hashlib.sha1(np.ascontiguousarray(audio, dtype=np.float32).tobytes()).hexdigest(), lift_db, silence.enabled)
+    key = (hashlib.sha1(np.ascontiguousarray(audio, dtype=np.float32).tobytes()).hexdigest(), lift_db, silence.enabled, accel.enabled)
     if _last.get("key") != key:
         _last.clear()
         if lift_db > 0:
@@ -127,10 +127,28 @@ def follow_pitch(y: np.ndarray, ref: np.ndarray, strength: float = 1.0) -> np.nd
     and agree to within half an octave, Sidon's pitch is shifted `strength` of the
     way to the recording's with PSOLA (Praat's overlap-add), which re-spaces the
     pitch periods without re-synthesising anything. Elsewhere it's left alone.
-    Works in 30 s pieces cross-faded together; PSOLA keeps timing, so they line up.
+    Works in 30 s pieces, in parallel, cross-faded together; PSOLA keeps timing, so they line up.
     """
-    return stitch(y.size, int(FOLLOW_CHUNK_S * SR), int(FOLLOW_PAD_S * SR), int(FOLLOW_FADE_S * SR),
-                   lambda a, b, _: _repitch(y[a:b], ref[a:b], strength))
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    from itertools import repeat
+    chunk, pad = int(FOLLOW_CHUNK_S * SR), int(FOLLOW_PAD_S * SR)
+    todo = spans(y.size, chunk, pad)
+    done = None
+    if len(todo) > 1:
+        # each piece is independent and Praat runs on one core: spread them over all of them
+        # (the workers can't start when Python was fed its script on stdin: then it's one at a time)
+        try:
+            with ProcessPoolExecutor(min(len(todo), os.cpu_count() or 1)) as pool:
+                done = list(pool.map(_repitch, (y[a:b] for a, b in todo), (ref[a:b] for a, b in todo),
+                                     repeat(strength)))
+        except BrokenProcessPool:
+            pass
+    if done is None:
+        done = [_repitch(y[a:b], ref[a:b], strength) for a, b in todo]
+    parts = dict(zip(todo, done))
+    return stitch(y.size, chunk, pad, int(FOLLOW_FADE_S * SR), lambda a, b, _: parts[(a, b)])
 
 
 def _repitch(y: np.ndarray, ref: np.ndarray, strength: float) -> np.ndarray:
@@ -177,23 +195,32 @@ def _synthesise(audio: np.ndarray) -> np.ndarray:
     x = torch.nn.functional.pad(x, (0, -x.numel() % HOP))
     frames = x.numel() // HOP
 
-    def features(a, b, done):
-        feats = pre(torch.nn.functional.pad(x[a * HOP: b * HOP], (160, 160)).numpy(), sampling_rate=16_000,
-                    return_tensors="pt")["input_features"]
-        f = fe(feats)["last_hidden_state"][0].numpy()[: b - a]
-        progress.fraction(0.9 * done)
-        return np.pad(f, ((0, b - a - len(f)), (0, 0)), mode="edge")
+    def features(dev):
+        model = fe.to(dev)
 
-    with torch.inference_mode():
-        feats = stitch(frames, CHUNK_S * FPS, CONTEXT_S * FPS, int(FEATURE_FADE_S * FPS), features)
+        def piece(a, b, done):
+            feats = pre(torch.nn.functional.pad(x[a * HOP: b * HOP], (160, 160)).numpy(), sampling_rate=16_000,
+                        return_tensors="pt")["input_features"]
+            f = model(feats.to(dev))["last_hidden_state"][0].cpu().numpy()[: b - a]
+            progress.fraction(0.9 * done)
+            return np.pad(f, ((0, b - a - len(f)), (0, 0)), mode="edge")
 
-        def decode(a, b, done):
+        return stitch(frames, CHUNK_S * FPS, CONTEXT_S * FPS, int(FEATURE_FADE_S * FPS), piece)
+
+    def decode(dev):
+        model = dec.to(dev)
+
+        def piece(a, b, done):
             f = torch.from_numpy(np.ascontiguousarray(feats[a // UP: b // UP].T[None]))
             progress.fraction(0.9 + 0.1 * done)
-            z = dec(f).view(-1).numpy()  # 26 samples short of b - a, the same for every window
+            z = model(f.to(dev)).view(-1).cpu().numpy()  # 26 samples short of b - a, the same for every window
             return np.pad(z, (0, max(0, b - a - z.size)))[: b - a]
 
-        y = stitch(frames * UP, DECODE_S * SR, DECODE_PAD_S * SR, int(DECODE_FADE_S * SR), decode, align=UP)
+        return stitch(frames * UP, DECODE_S * SR, DECODE_PAD_S * SR, int(DECODE_FADE_S * SR), piece, align=UP)
+
+    with torch.inference_mode():
+        feats = accel.attempt("Studio mic features", features)
+        y = accel.attempt("Studio mic vocoder", decode)
     y = np.pad(y, (0, max(0, audio.size - y.size)))[: audio.size].astype(np.float32)
     # its output sits on a small DC offset, which in gated silence is a near-constant signal
     from scipy.signal import butter, sosfiltfilt

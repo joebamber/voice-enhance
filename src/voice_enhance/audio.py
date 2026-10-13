@@ -59,12 +59,23 @@ def save_wav(audio: np.ndarray, path: Path) -> None:
     sf.write(str(path), audio.astype(np.float32), SR, subtype="FLOAT")
 
 
+def _bounds(n: int, chunk: int, align: int = 1) -> list[int]:
+    k = max(1, -(-n // chunk))
+    return [round(i * n / k / align) * align for i in range(k)] + [n]
+
+
+def spans(n: int, chunk: int, pad: int, align: int = 1) -> list[tuple[int, int]]:
+    """The (a, b) ranges stitch() will ask its piece function for, in order."""
+    bounds = _bounds(n, chunk, align)
+    return [(max(0, s - pad), min(n, e + pad)) for s, e in zip(bounds, bounds[1:])]
+
+
 def stitch(n: int, chunk: int, pad: int, fade: int, piece, align: int = 1) -> np.ndarray:
     """Run piece(a, b) -> rows a..b over [0, n) in equal pieces of at most `chunk` rows,
     each seeing `pad` more either side, and cross-fade them over `fade` at the joins.
     Piece boundaries are multiples of `align` (pass `pad` as one too)."""
-    k = max(1, -(-n // chunk))
-    bounds = [round(i * n / k / align) * align for i in range(k)] + [n]
+    bounds = _bounds(n, chunk, align)
+    k = len(bounds) - 1
     out = None
     for i, (s, e) in enumerate(zip(bounds, bounds[1:])):
         a, b = max(0, s - pad), min(n, e + pad)
