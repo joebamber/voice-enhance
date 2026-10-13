@@ -18,6 +18,8 @@ dependencies = [
     "clearvoice>=0.1.2",
     # Sidon (--studio): its feature front end. Weights download from Hugging Face on first use.
     "transformers>=4.40",
+    # Sidon's pitch follow (--follow-pitch): Praat's pitch tracker and PSOLA.
+    "praat-parselmouth>=0.4.3",
     # StuPASE (--stupase): its flow-matching model (code vendored in stupase_model/).
     # Weights (~2.2 GB) download from Hugging Face on first use.
     "x-transformers==2.14.2",

@@ -9,7 +9,9 @@ It runs last, on the finished voice. Its output is a new waveform, not a filtere
 copy (waveform correlation with the input ~0.1), so it can't be blended with the
 original: a wet/dry mix comb-filters, and crossovers that kept the real voice
 below 600 Hz-8 kHz either changed nothing or kept the wobble. Experimental: its
-pitch and harmonics can sound synthetic.
+pitch and harmonics can sound synthetic. w2v-BERT features carry pitch only roughly, so
+the vocoder snaps glides into steps (an auto-tune sound); follow_pitch() moves its
+output back onto the recording's own pitch contour.
 Weights (~1.2 GB) come from Hugging Face on first use; CPU runs at ~10x real time.
 """
 
@@ -20,15 +22,27 @@ from functools import lru_cache
 
 import numpy as np
 
-from .audio import SR
+from .audio import SR, stitch
 
 REPO = "sarulab-speech/sidon-v0.1"
 # The demo uses 96 s chunks, but w2v-BERT's attention memory grows with the square
-# of the chunk length: 96 s peaked at ~17 GB. Each chunk also sees CONTEXT_S of the
-# audio before it (features dropped afterwards) so the joins don't start cold.
+# of the chunk length: 96 s peaked at ~17 GB. So the file is cut into equal pieces of
+# at most CHUNK_S, each seeing CONTEXT_S of audio either side so the joins don't start
+# cold, and their features are cross-faded over FEATURE_FADE_S. The vocoder then runs
+# on the joined features in DECODE_S windows, cross-faded the same way: decoding each
+# piece on its own left an audible jump at every join, and a short last piece (e.g. the
+# final 4 s of a 44 s file) stumbled.
 CHUNK_S = 20
 CONTEXT_S = 2
+FEATURE_FADE_S = 0.4
+DECODE_S, DECODE_PAD_S, DECODE_FADE_S = 20, 1, 0.2
 FPS = 50  # feature frames per second (hop 160 at 16 kHz, stacked in pairs)
+HOP = 16_000 // FPS  # input samples (16 kHz) per frame
+UP = SR // FPS  # output samples (48 kHz) per frame
+# Lifting quiet speech: words more than LIFT_BELOW_DB under the loudest speech are raised
+# (by up to the --lift-quiet amount) before Sidon and lowered again after it. Nothing
+# more than LIFT_FLOOR_DB under the loudest speech is lifted: that's room tone.
+LIFT_BELOW_DB, LIFT_FLOOR_DB = 6.0, 40.0
 
 
 def available() -> bool:
@@ -52,16 +66,99 @@ def _load():
 _last: dict = {}  # one-entry cache: changing only the output level in the app doesn't re-run the model
 
 
-def run(audio: np.ndarray) -> np.ndarray:
-    """48 kHz mono in, 48 kHz mono out at the same RMS level, time-aligned with the input."""
+def run(audio: np.ndarray, follow: float = 0.0, lift_db: float = 0.0) -> np.ndarray:
+    """48 kHz mono in, 48 kHz mono out at the same RMS level, time-aligned with the input.
+    `follow` (0-1): how far to move its pitch onto the input's (see follow_pitch).
+    `lift_db`: raise quiet words by up to this much for Sidon, which stumbles and sounds
+    more robotic on them, then lower them back (see _lift_gain)."""
     import hashlib
-    key = hashlib.sha1(np.ascontiguousarray(audio, dtype=np.float32).tobytes()).hexdigest()
+    key = (hashlib.sha1(np.ascontiguousarray(audio, dtype=np.float32).tobytes()).hexdigest(), lift_db)
     if _last.get("key") != key:
         _last.clear()
-        _last.update(key=key, out=_synthesise(audio))
+        if lift_db > 0:
+            g = _lift_gain(audio, lift_db)
+            y = _synthesise(audio * g) / g
+            rms_in, rms_out = np.sqrt(np.mean(audio ** 2)), np.sqrt(np.mean(y ** 2))
+            y = (y * (rms_in / rms_out) if rms_out > 0 else y).astype(np.float32)
+        else:
+            y = _synthesise(audio)
+        _last.update(key=key, out=y)
+    out = _last["out"].copy()
+    if follow > 0:
+        out = follow_pitch(out, audio, follow)
     from . import progress
     progress.fraction(1.0)
-    return _last["out"].copy()
+    return out
+
+
+def _lift_gain(audio: np.ndarray, max_db: float) -> np.ndarray:
+    """Per-sample gain that raises speech quieter than LIFT_BELOW_DB under the loudest
+    speech by up to `max_db`, eased off towards room-tone level, moving over ~100 ms."""
+    from scipy.ndimage import uniform_filter1d
+    fr = SR // 50  # 20 ms
+    m = audio.size // fr
+    if m < 10:
+        return np.ones_like(audio)
+    p = uniform_filter1d((audio[: m * fr].reshape(m, fr) ** 2).mean(1), 10)  # 200 ms
+    lv = 10 * np.log10(p + 1e-12)
+    top = np.percentile(lv, 95)
+    gain = np.clip(top - LIFT_BELOW_DB - lv, 0, max_db)
+    gain *= np.clip((lv - (top - LIFT_FLOOR_DB)) / 10, 0, 1)
+    g = 10 ** (uniform_filter1d(gain, 5) / 20)
+    return np.interp(np.arange(audio.size), (np.arange(m) + 0.5) * fr, g).astype(np.float32)
+
+
+PITCH_STEP = 0.01  # s
+PITCH_FLOOR, PITCH_CEILING = 60.0, 600.0  # Hz
+MAX_SHIFT = 0.5  # octaves; trackers disagreeing by more than this is an octave error, not Sidon
+FOLLOW_CHUNK_S, FOLLOW_PAD_S, FOLLOW_FADE_S = 30, 0.5, 0.05
+
+
+def available_follow() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("parselmouth") is not None
+
+
+def follow_pitch(y: np.ndarray, ref: np.ndarray, strength: float = 1.0) -> np.ndarray:
+    """Move Sidon's voice onto the recording's own pitch contour, keeping its new sound.
+
+    Both are pitch-tracked (Praat) on the same 10 ms grid; wherever both are voiced
+    and agree to within half an octave, Sidon's pitch is shifted `strength` of the
+    way to the recording's with PSOLA (Praat's overlap-add), which re-spaces the
+    pitch periods without re-synthesising anything. Elsewhere it's left alone.
+    Works in 30 s pieces cross-faded together; PSOLA keeps timing, so they line up.
+    """
+    return stitch(y.size, int(FOLLOW_CHUNK_S * SR), int(FOLLOW_PAD_S * SR), int(FOLLOW_FADE_S * SR),
+                   lambda a, b, _: _repitch(y[a:b], ref[a:b], strength))
+
+
+def _repitch(y: np.ndarray, ref: np.ndarray, strength: float) -> np.ndarray:
+    import parselmouth
+    from parselmouth.praat import call
+    from scipy.ndimage import median_filter
+    snd = parselmouth.Sound(y.astype(np.float64), SR)
+    own = snd.to_pitch_ac(PITCH_STEP, PITCH_FLOOR, 15, False, 0.03, 0.45, 0.01, 0.35, 0.14, PITCH_CEILING)
+    want = parselmouth.Sound(ref.astype(np.float64), SR).to_pitch_ac(
+        PITCH_STEP, PITCH_FLOOR, 15, False, 0.03, 0.45, 0.01, 0.35, 0.14, PITCH_CEILING)
+    t, f0 = own.xs(), own.selected_array["frequency"]
+    fr = np.interp(t, want.xs(), want.selected_array["frequency"])
+    # interpolating across a voiced/unvoiced edge gives a made-up low value: need both neighbours voiced
+    ref_voiced = np.interp(t, want.xs(), (want.selected_array["frequency"] > 0).astype(float)) == 1
+    voiced = f0 > 0
+    shift = np.zeros_like(f0)
+    ok = voiced & ref_voiced
+    shift[ok] = np.log2(fr[ok] / f0[ok])
+    shift[np.abs(shift) > MAX_SHIFT] = 0.0
+    shift = median_filter(shift, 3)  # a single odd frame is a tracking glitch
+    if not voiced.any():
+        return y.copy()
+    manip = call(snd, "To Manipulation", PITCH_STEP, PITCH_FLOOR, PITCH_CEILING)
+    tier = call("Create PitchTier", "follow", snd.xmin, snd.xmax)
+    for ti, fi, si in zip(t[voiced], f0[voiced], shift[voiced]):
+        call(tier, "Add point", float(ti), float(fi * 2 ** (strength * si)))
+    call([manip, tier], "Replace pitch tier")
+    z = call(manip, "Get resynthesis (overlap-add)").values[0].astype(np.float32)
+    return np.pad(z, (0, max(0, y.size - z.size)))[: y.size]
 
 
 def _synthesise(audio: np.ndarray) -> np.ndarray:
@@ -76,22 +173,26 @@ def _synthesise(audio: np.ndarray) -> np.ndarray:
     x = AF.highpass_biquad(x, SR, 50)
     x = AF.resample(x, SR, 16_000).view(-1)
     x = torch.nn.functional.pad(0.9 * x / x.abs().max(), (0, 24_000))
-    step, ctx = 16_000 * CHUNK_S, 16_000 * CONTEXT_S
-    starts = range(0, x.numel(), step)
-    out, cache = [], None
+    x = torch.nn.functional.pad(x, (0, -x.numel() % HOP))
+    frames = x.numel() // HOP
+
+    def features(a, b, done):
+        feats = pre(torch.nn.functional.pad(x[a * HOP: b * HOP], (160, 160)).numpy(), sampling_rate=16_000,
+                    return_tensors="pt")["input_features"]
+        f = fe(feats)["last_hidden_state"][0].numpy()[: b - a]
+        progress.fraction(0.9 * done)
+        return np.pad(f, ((0, b - a - len(f)), (0, 0)), mode="edge")
+
     with torch.inference_mode():
-        for i, s in enumerate(starts):
-            c = min(ctx, s)  # whole seconds, so it maps to exactly c // 320 frames
-            chunk = x[s - c: s + step]
-            feats = pre(torch.nn.functional.pad(chunk, (160, 160)).numpy(), sampling_rate=16_000,
-                        return_tensors="pt")["input_features"]
-            f = fe(feats)["last_hidden_state"][:, c * FPS // 16_000:]
-            if cache is not None:
-                f = torch.cat([cache, f], dim=1)
-            out.append(dec(f.transpose(1, 2)).view(-1)[:-960])
-            cache = f[:, -1:]
-            progress.fraction((i + 1) / len(starts))
-    y = torch.cat(out).numpy()
+        feats = stitch(frames, CHUNK_S * FPS, CONTEXT_S * FPS, int(FEATURE_FADE_S * FPS), features)
+
+        def decode(a, b, done):
+            f = torch.from_numpy(np.ascontiguousarray(feats[a // UP: b // UP].T[None]))
+            progress.fraction(0.9 + 0.1 * done)
+            z = dec(f).view(-1).numpy()  # 26 samples short of b - a, the same for every window
+            return np.pad(z, (0, max(0, b - a - z.size)))[: b - a]
+
+        y = stitch(frames * UP, DECODE_S * SR, DECODE_PAD_S * SR, int(DECODE_FADE_S * SR), decode, align=UP)
     y = np.pad(y, (0, max(0, audio.size - y.size)))[: audio.size].astype(np.float32)
     # its output sits on a small DC offset, which in gated silence is a near-constant signal
     from scipy.signal import butter, sosfiltfilt

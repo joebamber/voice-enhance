@@ -27,7 +27,7 @@
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased; padding-bottom: 96px;
   }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  .wrap { max-width: 1480px; margin: 0 auto; padding: 0 20px; }
   .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
   button, select { font: inherit; color: inherit; }
   button {
@@ -96,8 +96,11 @@
     animation: spin .8s linear infinite; flex: none;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 16px; }
+  /* the cards run in processing order, so on a desktop they sit in one row, left to right */
+  @media (min-width: 1200px) { .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; } .card { padding: 14px 14px 6px; } }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px 6px; box-shadow: var(--shadow); }
+  .card h2 .step { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; margin-right: 6px; background: var(--line); color: var(--ink); font-size: 10px; letter-spacing: 0; }
   .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
   .ctl { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 10px; margin-bottom: 14px; }
   .ctl .name { font-weight: 550; }
@@ -186,53 +189,79 @@
     <div class="note mono" id="note"></div>
   </section>
 
-  <p class="key"><span class="ai">✦ AI</span> uses a neural network: slower than the rest, and it changes the sound rather than just the level or EQ. Everything else is standard audio processing.</p>
+  <p class="key"><span class="ai">✦ AI</span> uses a neural network: slower than the rest, and it changes the sound rather than just the level or EQ. Everything else is standard audio processing. The steps run in the order shown: groups 1 to 5, and top to bottom within each.</p>
   <p class="lockmsg" id="lockmsg" hidden></p>
   <fieldset id="settings">
   <div class="grid">
     <section class="card">
-      <h2>Noise</h2>
+      <h2><span class="step">1</span>Repair</h2>
+      <div class="ctl" data-key="declip"><label class="name"><input type="checkbox" class="sw">Repair clipped peaks<span class="slow" title="Repairs before the AI cleanup, so changing it re-runs that">re-runs AI</span></label><span></span>
+        <small>Rounds off peaks that hit the recorder's ceiling (flat-topped waveform).</small></div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">2</span>Noise</h2>
       <div class="ctl" data-key="backend"><label class="name"><input type="checkbox" class="sw">Noise removal<span class="ai" title="DeepFilterNet, a neural network. Changing this re-runs it.">✦ AI</span></label><span></span>
         <small>DeepFilterNet takes out background noise and keeps the voice natural. Off leaves the recording as it is, and the controls that work on its result are greyed out.</small></div>
       <div class="ctl" data-key="max_reduction" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Max reduction<span class="ai" title="A DeepFilterNet setting. Changing this re-runs it.">✦ AI</span></label><output></output>
         <input type="range" min="3" max="40" step="1">
         <small>Caps how far any sound is pushed down. Lower leaves natural room tone in the pauses (turn the gate off to hear it).</small></div>
-      <div class="ctl" data-key="blend" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Blend original</label><output></output>
-        <input type="range" min="0.05" max="1" step="0.05">
-        <small>Blends this much of the original recording (noise included) back in, for lighter noise removal.</small></div>
       <div class="ctl" data-key="protect" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Protect loud speech</label><output></output>
         <input type="range" min="1" max="40" step="1">
         <small>Turn on if loud words dip in level: speech this far above the room noise comes from the original.</small></div>
-    </section>
-
-    <section class="card">
-      <h2>Background</h2>
-      <div class="ctl" data-key="gate" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Background gate</label><output></output>
-        <input type="range" min="1" max="60" step="1">
-        <small>Silences anything this far below the speaker, like faint voices in the background. Higher keeps quieter sounds.</small></div>
-      <div class="ctl" data-key="dehiss" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">De-hiss</label><output></output>
-        <input type="range" min="1" max="24" step="1">
-        <small>Turns down the steady treble hiss the AI lets through while someone's speaking, by up to this much. S's and T's are louder than the hiss and pass.</small></div>
       <div class="ctl" data-key="laughter_guard" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Laughter guard<span class="ai" title="Runs a second, gentle DeepFilterNet pass for laughs.">✦ AI</span></label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small>Protects laughs from the cleanup. Lower it if noise comes and goes around laughs.</small></div>
-      <div class="ctl" data-key="ai_dereverb"><label class="name"><input type="checkbox" class="sw">AI dereverb<span class="ai" title="A neural network (anvuew's dereverb_room) removes the room's echo.">✦ AI</span><span class="slow" title="New: tuned on vocals, not tested much on speech.">experimental</span></label><output></output>
+      <div class="ctl" data-key="blend" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Blend original</label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
-        <small id="ai-dereverb-hint">Removes room echo while keeping the recording's own voice (nothing is re-synthesised). Below 100% blends some of the room back. Slow on long files; changing its strength doesn't re-run it.</small></div>
+        <small>Blends this much of the original recording (noise included) back in, for lighter noise removal.</small></div>
     </section>
 
     <section class="card">
-      <h2>Repair</h2>
+      <h2><span class="step">3</span>Background</h2>
+      <div class="ctl" data-key="gate" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Background gate</label><output></output>
+        <input type="range" min="1" max="60" step="1">
+        <small>Silences anything this far below the speaker, like faint voices in the background. Higher keeps quieter sounds.</small></div>
+      <div class="ctl" data-key="ai_dereverb"><label class="name"><input type="checkbox" class="sw">AI dereverb<span class="ai" title="A neural network (anvuew's dereverb_room) removes the room's echo.">✦ AI</span><span class="slow" title="New: tuned on vocals, not tested much on speech.">experimental</span></label><output></output>
+        <input type="range" min="0.05" max="1" step="0.05">
+        <small id="ai-dereverb-hint">Removes room echo while keeping the recording's own voice (nothing is re-synthesised). Below 100% blends some of the room back. Slow on long files; changing its strength doesn't re-run it.</small></div>
+      <div class="ctl" data-key="dehiss" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">De-hiss</label><output></output>
+        <input type="range" min="1" max="24" step="1">
+        <small>Turns down the steady treble hiss the AI lets through while someone's speaking, by up to this much. S's and T's are louder than the hiss and pass.</small></div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">4</span>Voice</h2>
       <div class="ctl" data-key="rebuild"><label class="name"><input type="checkbox" class="sw">Rebuild high frequencies<span class="ai" title="MossFormer2, a neural network, generates the missing treble.">✦ AI</span></label><span></span>
         <small id="rebuild-hint">Only acts on band-limited recordings (phone, Zoom): regenerates the treble missing below 12 kHz. Slow on long files.</small></div>
-      <div class="ctl" data-key="declip"><label class="name"><input type="checkbox" class="sw">Repair clipped peaks<span class="slow" title="Repairs before the AI cleanup, so changing it re-runs that">re-runs AI</span></label><span></span>
-        <small>Rounds off peaks that hit the recorder's ceiling (flat-topped waveform).</small></div>
       <div class="ctl" data-key="studio"><label class="name"><input type="checkbox" class="sw">Studio mic<span class="ai" title="A neural network re-synthesises the voice.">✦ AI</span><span class="slow" title="Early-stage models: they can wobble or sound synthetic.">experimental</span></label><span></span>
-        <select><option value="stupase">StuPASE</option><option value="sidon">Sidon</option></select>
+        <select><option value="stupase">StuPASE</option><option value="sidon">Sidon</option><option value="sidon+stupase">Sidon → StuPASE</option></select>
         <small id="studio-hint"></small></div>
+      <div class="ctl" data-key="lift_quiet"><label class="name"><input type="checkbox" class="sw">Lift quiet speech</label><output></output>
+        <input type="range" min="3" max="24" step="1">
+        <small>Sidon stumbles and sounds more robotic on quiet words. This raises them by up to this much before Sidon and lowers them back after it, so the level is unchanged. Re-runs Sidon.</small></div>
+      <div class="ctl" data-key="follow_pitch"><label class="name"><input type="checkbox" class="sw">Follow original pitch</label><output></output>
+        <input type="range" min="0.05" max="1" step="0.05">
+        <small id="follow-pitch-hint">Sidon snaps the voice's pitch into steps, which can sound like auto-tune. This moves it back onto the recording's own pitch, keeping Sidon's new sound. Below 100% goes part of the way.</small></div>
       <div class="ctl" data-key="stupase_crossover"><label class="name"><input type="checkbox" class="sw">StuPASE crossover</label><output></output>
         <input type="range" min="1500" max="7500" step="250">
         <small>StuPASE makes the voice below this, and the recording supplies everything above (S, T, breath), since StuPASE blurs them: an S comes out like an F. Off: all StuPASE, with the rebuild adding the top end.</small></div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">5</span>Finish</h2>
+      <div class="ctl" data-key="level_speech"><label class="name"><input type="checkbox" class="sw">Level speech</label><output></output>
+        <input type="range" min="2" max="18" step="1">
+        <small>Evens out the speaking level: quieter speech is raised by up to this much and louder speech lowered by up to 8 dB, towards its usual level. Pauses aren't raised.</small></div>
+      <div class="ctl" data-key="presence"><label class="name"><input type="checkbox" class="sw">Presence</label><output></output>
+        <input type="range" min="0.5" max="8" step="0.5">
+        <small>Brings the voice forward with a boost around 2.8 kHz.</small></div>
+      <div class="ctl" data-key="low_shelf"><label class="name"><input type="checkbox" class="sw">Low cut</label><output></output>
+        <input type="range" min="1" max="8" step="0.5">
+        <small>Turns everything below 120 Hz down by this much, for less boom.</small></div>
+      <div class="ctl" data-key="top_cut"><label class="name"><input type="checkbox" class="sw">Top cut</label><output></output>
+        <input type="range" min="8000" max="18000" step="500">
+        <small>Removes everything above this, where Sidon's invented treble sits. Voice ReGen stops at 12 kHz.</small></div>
     </section>
 
   </div>
@@ -275,6 +304,12 @@ const SPECS = {
   rebuild: { off: false, on: true },
   declip: { off: false, on: true },
   studio: { off: null, on: 'stupase' },
+  level_speech: { fmt: v => `${v} dB`, off: 0, on: 10 },
+  presence: { fmt: v => `+${v} dB`, off: 0, on: 3.5 },
+  low_shelf: { fmt: v => `−${v} dB`, off: 0, on: 3 },
+  top_cut: { fmt: v => `${(v / 1000).toFixed(v % 1000 ? 1 : 0)} kHz`, off: 0, on: 12000 },
+  lift_quiet: { fmt: v => `${v} dB`, off: 0, on: 12 },
+  follow_pitch: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 1 },
   stupase_crossover: { fmt: v => `${(v / 1000).toFixed(v % 1000 ? 2 : 0)} kHz`, off: 0, on: 5000 },
   max_reduction: { fmt: v => `${v} dB`, off: null, on: 12 },
   blend: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 0.2 },
@@ -289,9 +324,11 @@ let info, settings, status = {}, fileId = null, version = 0;
 const REBUILD_HINT = $('#rebuild-hint').textContent;
 const STUDIO_HINT = {
   stupase: 'The last step: StuPASE\'s AI re-synthesises the finished voice as if recorded close on a high-quality mic, following the recording\'s own spectrum to keep it sounding like the speaker. It works up to 8 kHz; the rebuild then adds the top end. About 12 minutes per hour of audio plus the rebuild, re-run on every change.',
+  'sidon+stupase': 'The last step: Sidon re-synthesises the finished voice as if recorded close on a high-quality mic, then StuPASE re-renders it, following Sidon\'s sound, which makes breathy sounds like an "h" more natural. Above the crossover, Sidon\'s own top end is kept. Takes as long as both, re-run on every change.',
   sidon: 'The last step: Sidon\'s AI re-synthesises the finished voice as if recorded close on a high-quality mic. It can wobble or sound synthetic. About 6 minutes per hour of audio, re-run on every change.',
 };
-const STUDIO_NEEDS = { stupase: 'the x-transformers and torchdiffeq packages', sidon: 'the transformers package' };
+const STUDIO_NEEDS = { stupase: 'the x-transformers and torchdiffeq packages', sidon: 'the transformers package',
+  'sidon+stupase': 'the transformers, x-transformers and torchdiffeq packages' };
 const lastOn = {};  // value each switched-off setting had, to come back to
 
 // --- settings ---------------------------------------------------------------
@@ -322,10 +359,17 @@ function syncControls() {
   $('#studio-hint').textContent = info.studio_available[model] ? STUDIO_HINT[model] + ' Turn AI noise removal off to give it the voice without it.'
     : `Needs ${STUDIO_NEEDS[model]}: reinstall voice-enhance.`;
   if (!Object.values(info.studio_available).some(Boolean)) $('[data-key=studio] .sw').disabled = true;
-  $('[data-key=stupase_crossover]').classList.toggle('hidden', studio !== 'stupase');
+  const usesSidon = ['sidon', 'sidon+stupase'].includes(studio), usesStupase = ['stupase', 'sidon+stupase'].includes(studio);
+  $('[data-key=stupase_crossover]').classList.toggle('hidden', !usesStupase);
+  $('[data-key=follow_pitch]').classList.toggle('hidden', !usesSidon);
+  $('[data-key=lift_quiet]').classList.toggle('hidden', !usesSidon);
+  if (!info.follow_pitch_available) {
+    $('[data-key=follow_pitch] .sw').disabled = true;
+    $('#follow-pitch-hint').textContent = 'Needs the praat-parselmouth package: reinstall voice-enhance.';
+  }
   // Sidon makes its own top end; StuPASE with no crossover stops at 8 kHz and runs the rebuild after it
-  const fullStupase = studio === 'stupase' && !settings.stupase_crossover;
-  const noRebuild = studio === 'sidon';
+  const fullStupase = usesStupase && !settings.stupase_crossover;
+  const noRebuild = usesSidon && !fullStupase;
   $('[data-key=rebuild] .sw').disabled = !info.rebuild_available || noRebuild;
   $('[data-key=rebuild]').classList.toggle('disabled', noRebuild);
   $('#rebuild-hint').textContent = noRebuild ? 'Skipped: Sidon generates its own high frequencies.'
@@ -687,6 +731,8 @@ addEventListener('keydown', e => {
 
 (async () => {
   info = await (await fetch('/api/info')).json();
+  if (!info.follow_pitch_available) info.defaults.follow_pitch = 0;  // so Sidon still runs without it
+  if (info.defaults.studio && !info.studio_available[info.defaults.studio]) info.defaults.studio = null;  // so a render still works
   $('#ver').textContent = info.version;
   settings = { ...info.defaults };
   $('#format').innerHTML = info.formats.filter(f => f !== 'aif').map(f => `<option value="${f}">${f.toUpperCase()}</option>`).join('');

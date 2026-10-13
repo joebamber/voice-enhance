@@ -136,16 +136,21 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
     return cleaned, note
 
 
+# studio models, and the chain: Sidon's studio sound, then StuPASE re-rendering it
+USES_SIDON = ("sidon", "sidon+stupase")
+USES_STUPASE = ("stupase", "sidon+stupase")
+
+
 def rebuild_wanted(args) -> bool:
     """Sidon, and StuPASE with no crossover, make the whole top end from the voice below
     8 kHz, so a rebuild before them is wasted. With a crossover, the top end above it comes
     from the recording, so it's rebuilt as usual."""
-    return args.rebuild and not (args.studio == "sidon" or (args.studio == "stupase" and not args.stupase_crossover))
+    return args.rebuild and not (args.studio in USES_SIDON or (args.studio in USES_STUPASE and not args.stupase_crossover))
 
 
 def stupase_rebuilds(args) -> bool:
     """With no crossover StuPASE stops at 8 kHz, so the rebuild runs after it instead of before."""
-    return args.studio == "stupase" and not args.stupase_crossover and args.rebuild and clearvoice_available()
+    return args.studio in USES_STUPASE and not args.stupase_crossover and args.rebuild and clearvoice_available()
 
 
 def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool, decode: bool) -> list[str]:
@@ -166,7 +171,14 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
         st.append("studio")
         if stupase_rebuilds(args):
             st.append("rebuild")  # StuPASE stops at 8 kHz
+    if finishing(args):
+        st.append("finish")
     return st + ["loudness"]
+
+
+def finishing(args) -> bool:
+    from . import finish
+    return finish.active(args.level_speech, args.presence, args.low_shelf, args.top_cut)
 
 
 def short(name: str, n: int = 28) -> str:
@@ -183,12 +195,21 @@ def render(audio: np.ndarray, dst: Path, args, ref_lufs: float) -> str:
             # last of all, on the finished voice; only the level is set after it
             prog.stage("studio")
             voice = load(b)
-            if args.studio == "stupase":
-                from . import stupase
-                save_wav(stupase.run(voice, args.stupase_crossover or 0, rebuild_top=stupase_rebuilds(args)), b)
-            else:
+            if args.studio in USES_SIDON:
                 from . import sidon
-                save_wav(sidon.run(voice), b)
+                voice = sidon.run(voice, follow=args.follow_pitch, lift_db=args.lift_quiet)
+            if args.studio in USES_STUPASE:
+                # in the chain StuPASE follows Sidon's spectrum, so it keeps Sidon's sound but renders
+                # the voice its own way (breathy sounds like an "h" come out more natural)
+                from . import stupase
+                voice = stupase.run(voice, args.stupase_crossover or 0, rebuild_top=stupase_rebuilds(args))
+            save_wav(voice, b)
+        if finishing(args):
+            # after Studio mic, so it evens out and shapes the voice it made
+            from . import finish
+            prog.stage("finish")
+            save_wav(finish.run(load(b), level_db=args.level_speech, presence_db=args.presence,
+                                shelf_db=args.low_shelf, top_hz=args.top_cut), b)
         prog.stage("loudness")
         if args.lufs is not None:
             loudness_stage(b, dst, lufs=args.lufs, tp=args.true_peak)
@@ -234,19 +255,41 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
-    ap.add_argument("--studio", action="store_const", const="sidon",
+    ap.add_argument("--studio", action="store_const", const="sidon", default="sidon",
                     help="experimental: finish by re-synthesising the voice with Sidon, so it sounds like a close, high-quality "
-                         "podcast mic. Runs after everything else (only the level is set after it); replaces the "
+                         "podcast mic. Runs after everything else but the finishing steps; replaces the "
                          "rebuild. It can wobble or sound synthetic. Use -b none to give it the voice without AI "
-                         "noise removal")
+                         "noise removal (default on)")
+    ap.add_argument("--no-studio", dest="studio", action="store_const", const=None,
+                    help="skip the Studio mic re-synthesis: keep the recording's own (cleaned) voice")
+    ap.add_argument("--follow-pitch", type=float, default=1.0, metavar="0-1",
+                    help="--studio: move Sidon's pitch back onto the recording's own, so glides don't snap into steps "
+                         "(the auto-tune sound); below 1 goes part of the way (default 1; 0 = off)")
+    ap.add_argument("--lift-quiet", type=float, default=0.0, metavar="dB",
+                    help="--studio: raise quiet words by up to this much before Sidon, which stumbles and sounds more "
+                         "robotic on them, and lower them back after it, e.g. 12 (default 0 = off)")
     ap.add_argument("--stupase", dest="studio", action="store_const", const="stupase",
                     help="experimental: like --studio, but with StuPASE, which re-synthesises the voice while following "
                          "the recording's own spectrum, to keep it sounding like the speaker. It works up to 8 kHz; "
                          "the recording supplies everything above --stupase-crossover")
+    ap.add_argument("--sidon-stupase", dest="studio", action="store_const", const="sidon+stupase",
+                    help="experimental: --studio, then StuPASE re-rendering Sidon's voice. StuPASE follows Sidon's "
+                         "spectrum, so it keeps Sidon's studio sound but renders breathy sounds (an 'h') more naturally; "
+                         "above --stupase-crossover, Sidon's own top end is kept. Takes as long as both")
     ap.add_argument("--stupase-crossover", type=float, default=5000.0, metavar="HZ",
                     help="--stupase: below this StuPASE makes the voice, above it the recording supplies it, since "
                          "StuPASE blurs sibilants (an 's' comes out like an 'f'). 0 = all StuPASE, with the rebuild "
                          "regenerating everything above 8 kHz (default 5000)")
+    ap.add_argument("--level-speech", type=float, default=10.0, metavar="dB",
+                    help="even out the speaking level, riding quieter speech up by up to this much and louder "
+                         "speech down by up to 8 dB, towards its median; pauses aren't raised (default 10; 0 = off)")
+    ap.add_argument("--presence", type=float, default=3.5, metavar="dB",
+                    help="boost the presence band around 2.8 kHz by this much (default 3.5; 0 = off)")
+    ap.add_argument("--low-shelf", type=float, default=3.0, metavar="dB",
+                    help="turn everything below 120 Hz down by this much (default 3; 0 = off)")
+    ap.add_argument("--top-cut", type=float, default=12000.0, metavar="HZ",
+                    help="remove everything above this frequency with a steep filter, like Voice ReGen's 12 kHz "
+                         "edge; Sidon's invented top end sits up there (default 12000; 0 = off)")
     ap.add_argument("--declip", action="store_true",
                     help="repair clipped (flat-topped) peaks before cleanup (default off)")
     ap.add_argument("--no-declip", dest="declip", action="store_false", help=argparse.SUPPRESS)  # the old default
@@ -280,20 +323,27 @@ def configure(args) -> None:
     """Check the settings and apply the ones the engines read globally."""
     if args.mix is not None:
         args.blend = 1 - args.mix
-    if not 0 <= args.blend <= 1 or not 0 <= args.laughter_guard <= 1 or not 0 <= args.ai_dereverb <= 1:
-        raise SystemExit("--blend, --laughter-guard and --ai-dereverb must be between 0 and 1")
+    if not 0 <= args.blend <= 1 or not 0 <= args.laughter_guard <= 1 or not 0 <= args.ai_dereverb <= 1 \
+            or not 0 <= args.follow_pitch <= 1 or args.lift_quiet < 0 \
+            or min(args.level_speech, args.presence, args.low_shelf, args.top_cut) < 0:
+        raise SystemExit("--blend, --laughter-guard, --ai-dereverb and --follow-pitch must be between 0 and 1, "
+                         "and --lift-quiet, --level-speech, --presence, --low-shelf and --top-cut can't be negative")
     from . import backends as _b
     _b.DF_SETTINGS["max_reduction_db"] = args.max_reduction
     from . import aidereverb, sidon, stupase
     if args.ai_dereverb > 0 and not aidereverb.available():
         raise SystemExit("--ai-dereverb needs the beartype, rotary-embedding-torch and einops packages. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
-    if args.studio == "stupase" and not stupase.available():
+    if args.studio in USES_STUPASE and not stupase.available():
         raise SystemExit("--stupase needs the x-transformers and torchdiffeq packages. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
-    if args.studio == "sidon" and not sidon.available():
+    if args.studio in USES_SIDON and not sidon.available():
         raise SystemExit("--studio needs the transformers package. Reinstall with:\n"
                          "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt")
+    if args.studio in USES_SIDON and args.follow_pitch > 0 and not sidon.available_follow():
+        raise SystemExit("--follow-pitch needs the praat-parselmouth package. Reinstall with:\n"
+                         "  uv tool install --python 3.11 . --force --reinstall-package voice-enhance --overrides overrides.txt\n"
+                         "or add --follow-pitch 0")
 
 
 def main(argv: list[str] | None = None) -> None:

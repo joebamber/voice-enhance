@@ -59,6 +59,28 @@ def save_wav(audio: np.ndarray, path: Path) -> None:
     sf.write(str(path), audio.astype(np.float32), SR, subtype="FLOAT")
 
 
+def stitch(n: int, chunk: int, pad: int, fade: int, piece, align: int = 1) -> np.ndarray:
+    """Run piece(a, b) -> rows a..b over [0, n) in equal pieces of at most `chunk` rows,
+    each seeing `pad` more either side, and cross-fade them over `fade` at the joins.
+    Piece boundaries are multiples of `align` (pass `pad` as one too)."""
+    k = max(1, -(-n // chunk))
+    bounds = [round(i * n / k / align) * align for i in range(k)] + [n]
+    out = None
+    for i, (s, e) in enumerate(zip(bounds, bounds[1:])):
+        a, b = max(0, s - pad), min(n, e + pad)
+        p = piece(a, b, (i + 1) / k)
+        lo, hi = (s - fade // 2 if s > 0 else 0), (e + fade // 2 if e < n else n)
+        w = np.ones(hi - lo, dtype=np.float32)
+        if s > 0:
+            w[:fade] = np.linspace(0, 1, fade, dtype=np.float32)
+        if e < n:
+            w[-fade:] = np.linspace(1, 0, fade, dtype=np.float32)
+        if out is None:
+            out = np.zeros((n,) + p.shape[1:], dtype=np.float32)
+        out[lo:hi] += w.reshape((-1,) + (1,) * (p.ndim - 1)) * p[lo - a: hi - a]
+    return out
+
+
 # --- Polish chain ----------------------------------------------------------
 # Level-independent: the cleaned voice is first brought to a fixed working
 # loudness so the compressor threshold means the same thing on every file.

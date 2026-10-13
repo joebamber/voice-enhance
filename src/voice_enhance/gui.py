@@ -38,10 +38,13 @@ DIALOGS = Path(__file__).with_name("dialogs.js")
 # settings key (argparse dest) -> flag; only values that differ from the CLI defaults are passed
 FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "blend": "--blend",
          "gate": "--gate", "dehiss": "--dehiss", "laughter_guard": "--laughter-guard", "ai_dereverb": "--ai-dereverb", "lufs": "--lufs",
-         "format": "-f", "stupase_crossover": "--stupase-crossover"}
+         "format": "-f", "stupase_crossover": "--stupase-crossover", "follow_pitch": "--follow-pitch",
+         "lift_quiet": "--lift-quiet", "level_speech": "--level-speech", "presence": "--presence",
+         "low_shelf": "--low-shelf", "top_cut": "--top-cut"}
+ONLY_WITH = {"stupase_crossover": cli.USES_STUPASE, "follow_pitch": cli.USES_SIDON, "lift_quiet": cli.USES_SIDON}  # studio-model settings
 OFF_SWITCHES: dict[str, str] = {}  # flag given when False
 ON_SWITCHES = {"declip": "--declip", "rebuild": "--rebuild"}  # flag given when True
-STUDIO = {"sidon": "--studio", "stupase": "--stupase"}  # studio model -> flag (None = off)
+STUDIO = {"sidon": "--studio", "stupase": "--stupase", "sidon+stupase": "--sidon-stupase"}  # studio model -> flag (None = off)
 DEFAULTS = {k: v for k, v in vars(cli.parser().parse_args([])).items()
             if k in FLAGS or k in OFF_SWITCHES or k in ON_SWITCHES or k == "studio"}
 
@@ -50,18 +53,20 @@ def to_argv(settings: dict) -> list[str]:
     argv: list[str] = []
     for key, flag in FLAGS.items():
         v = settings.get(key, DEFAULTS[key])
-        if v is not None and v != DEFAULTS[key] and (key != "stupase_crossover" or settings.get("studio") == "stupase"):
+        if v is not None and v != DEFAULTS[key] and (key not in ONLY_WITH or settings.get("studio", DEFAULTS["studio"]) in ONLY_WITH[key]):
             argv += [flag, f"{v:g}" if isinstance(v, float) else str(v)]
     argv += [f for k, f in OFF_SWITCHES.items() if not settings.get(k, True)]
     argv += [f for k, f in ON_SWITCHES.items() if settings.get(k, False)]
-    if settings.get("studio") in STUDIO:
-        argv.append(STUDIO[settings["studio"]])
+    studio = settings.get("studio", DEFAULTS["studio"])
+    if studio != DEFAULTS["studio"]:
+        argv.append(STUDIO.get(studio, "--no-studio"))
     return argv
 
 
 # short names for the settings in saved file names
 LABELS = {"-b": "noise", "--max-reduction": "maxred", "--laughter-guard": "laugh", "--ai-dereverb": "aidereverb",
-          "--stupase-crossover": "xover", "--studio": "sidon"}
+          "--stupase-crossover": "xover", "--studio": "sidon", "--follow-pitch": "pitch", "--lift-quiet": "lift", "--level-speech": "level",
+          "--low-shelf": "shelf", "--top-cut": "top"}
 
 
 def sample_of(settings: dict) -> tuple[float, float] | None:
@@ -407,7 +412,9 @@ def handler(session: Session, port: int, initial: Path | None):
             if path == "/api/info":
                 return self._json({"version": __version__, "defaults": DEFAULTS,
                                    "rebuild_available": clearvoice_available(), "ai_dereverb_available": aidereverb.available(),
-                                   "studio_available": {"sidon": sidon.available(), "stupase": stupase.available()}, "formats": [e[1:] for e in ENCODERS],
+                                   "studio_available": {"sidon": sidon.available(), "stupase": stupase.available(),
+                                                        "sidon+stupase": sidon.available() and stupase.available()},
+                                   "follow_pitch_available": sidon.available_follow(), "formats": [e[1:] for e in ENCODERS],
                                    "initial": bool(initial)})
             if path == "/api/status":
                 return self._json(session.status)
