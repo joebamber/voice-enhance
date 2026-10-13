@@ -22,6 +22,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from . import silence
 from .audio import SR, stitch
 
 REPO = "sarulab-speech/sidon-v0.1"
@@ -72,16 +73,16 @@ def run(audio: np.ndarray, follow: float = 0.0, lift_db: float = 0.0) -> np.ndar
     `lift_db`: raise quiet words by up to this much for Sidon, which stumbles and sounds
     more robotic on them, then lower them back (see _lift_gain)."""
     import hashlib
-    key = (hashlib.sha1(np.ascontiguousarray(audio, dtype=np.float32).tobytes()).hexdigest(), lift_db)
+    key = (hashlib.sha1(np.ascontiguousarray(audio, dtype=np.float32).tobytes()).hexdigest(), lift_db, silence.enabled)
     if _last.get("key") != key:
         _last.clear()
         if lift_db > 0:
             g = _lift_gain(audio, lift_db)
-            y = _synthesise(audio * g) / g
+            y = silence.skip(audio * g, _synthesise) / g
             rms_in, rms_out = np.sqrt(np.mean(audio ** 2)), np.sqrt(np.mean(y ** 2))
             y = (y * (rms_in / rms_out) if rms_out > 0 else y).astype(np.float32)
         else:
-            y = _synthesise(audio)
+            y = silence.skip(audio, _synthesise)
         _last.update(key=key, out=y)
     out = _last["out"].copy()
     if follow > 0:

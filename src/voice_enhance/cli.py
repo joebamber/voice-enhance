@@ -20,6 +20,7 @@ from .protect import protect
 from .dehiss import dehiss
 from .gate import gate
 from .guard import GuardSettings, apply_guard
+from . import silence
 
 AUDIO_EXTS = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus",
               ".caf", ".mov", ".mp4", ".mkv", ".webm"}
@@ -115,10 +116,13 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
         from . import aidereverb
         t = time.time()
         prog.stage("aidereverb")
-        ai_key = key + (protect_db, guard and guard.strength, mix, gate_db)
-        wet, cached = memo(cache, "aidereverb", ai_key, lambda: aidereverb.run(cleaned))
+        ai_key = key + (protect_db, guard and guard.strength, mix, gate_db, silence.enabled)
+        skipped = silence.skipped_fraction(cleaned)
+        wet, cached = memo(cache, "aidereverb", ai_key, lambda: silence.skip(cleaned, aidereverb.run))
         cleaned = cleaned + ai_dereverb * (wet - cleaned)
         note += ", AI dereverb (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
+        if skipped > 0:
+            note += f", {skipped * 100:.0f}% skipped as silence"
     if dehiss_db > 0 and backend != "none":
         # after the AI steps, so changing it doesn't re-run them; the hiss is
         # measured in the original, where the gaps between words still have it
@@ -297,6 +301,9 @@ def parser() -> argparse.ArgumentParser:
                     help="experimental: remove room reverb with an AI model (anvuew's dereverb_room), after the "
                          "cleanup. It keeps the recording's own voice (no re-synthesis); below 1 blends it with the "
                          "reverberant version (default 1; 0 = off)")
+    ap.add_argument("--process-silence", action="store_true",
+                    help="run AI dereverb and Studio mic over long silences too, instead of skipping them "
+                         "(slower; for comparing)")
     ap.add_argument("--compare", action="store_true",
                     help="render DeepFilterNet with and without the laughter guard "
                          "into <name>_compare/ for A/B listening")
@@ -323,6 +330,7 @@ def configure(args) -> None:
     """Check the settings and apply the ones the engines read globally."""
     if args.mix is not None:
         args.blend = 1 - args.mix
+    silence.enabled = not args.process_silence
     if not 0 <= args.blend <= 1 or not 0 <= args.laughter_guard <= 1 or not 0 <= args.ai_dereverb <= 1 \
             or not 0 <= args.follow_pitch <= 1 or args.lift_quiet < 0 \
             or min(args.level_speech, args.presence, args.low_shelf, args.top_cut) < 0:
