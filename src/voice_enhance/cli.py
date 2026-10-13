@@ -17,6 +17,7 @@ from .audio import SR, level_stage, load, loudness_stage, measure, polish_stage,
 from .backends import BACKENDS, available_backends, clearvoice_available, deepfilter, rebuild
 from .declip import declip
 from .protect import protect
+from .dehiss import dehiss
 from .gate import gate
 from .guard import GuardSettings, apply_guard
 
@@ -75,7 +76,7 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
             cache: dict | None = None, verbose: bool = False, rebuild_hf: bool = False,
             rebuild_above: float | None = None,
             repair_clipping: bool = True, protect_db: float = 0.0,
-            gate_db: float = 30.0, ai_dereverb: float = 0.0) -> tuple[np.ndarray, str]:
+            gate_db: float = 30.0, ai_dereverb: float = 0.0, dehiss_db: float = 0.0) -> tuple[np.ndarray, str]:
     """`cache` (one dict per source file) keeps the slow steps between calls."""
     notes = []
     if repair_clipping:
@@ -118,12 +119,18 @@ def process(audio: np.ndarray, backend: str, *, mix: float, guard: GuardSettings
         wet, cached = memo(cache, "aidereverb", ai_key, lambda: aidereverb.run(cleaned))
         cleaned = cleaned + ai_dereverb * (wet - cleaned)
         note += ", AI dereverb (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
+    if dehiss_db > 0 and backend != "none":
+        # after the AI steps, so changing it doesn't re-run them; the hiss is
+        # measured in the original, where the gaps between words still have it
+        prog.stage("dehiss")
+        cleaned = dehiss(cleaned, audio, max_db=dehiss_db)
+        note += f", de-hiss {dehiss_db:g} dB"
     if rebuild_hf:
         # after the guard, so laughs get rebuilt too instead of flipping between
         # a rebuilt and an un-rebuilt version
         t = time.time()
         prog.stage("rebuild")
-        key += (protect_db, guard and guard.strength, mix, gate_db, ai_dereverb, rebuild_above)
+        key += (protect_db, guard and guard.strength, mix, gate_db, ai_dereverb, dehiss_db, rebuild_above)
         (cleaned, what), cached = memo(cache, "rebuild", key, lambda: rebuild(cleaned, rebuild_above))
         note += f", {what} (" + ("reused" if cached else f"{time.time() - t:.1f}s") + ")"
     return cleaned, note
@@ -150,6 +157,8 @@ def stages_for(args, backend: str, guard: GuardSettings | None, rebuild_hf: bool
         st.append("guard")
     if args.ai_dereverb > 0:
         st.append("aidereverb")
+    if backend != "none" and args.dehiss > 0:
+        st.append("dehiss")
     if rebuild_hf:
         st.append("rebuild")
     st.append("polish")
@@ -218,6 +227,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--gate", type=float, default=0.0, metavar="dB",
                     help="silence anything this far below the main speaker, e.g. faint voices in the background "
                          "that the AI keeps because they're speech, e.g. 30 (default 0 = off; higher keeps quieter sounds)")
+    ap.add_argument("--dehiss", type=float, default=0.0, metavar="dB",
+                    help="turn the steady treble hiss down by up to this much while someone's speaking, where "
+                         "DeepFilterNet lets it through, e.g. 12 (default 0 = off). Only above ~5 kHz; S's and T's "
+                         "are louder than the hiss and pass")
     ap.add_argument("--max-reduction", type=float, default=None, metavar="dB",
                     help="deepfilter: cap how far any sound is pushed down (e.g. 12). Leaves a little natural "
                          "room tone instead of dead silence, which avoids watery/warbly artefacts")
@@ -353,7 +366,7 @@ def main(argv: list[str] | None = None) -> None:
                     y, note = process(audio, b, mix=1 - args.blend, guard=g, cache=cache,
                                       verbose=args.verbose, rebuild_hf=rebuild_wanted(args), ai_dereverb=args.ai_dereverb,
                                       repair_clipping=args.declip, protect_db=args.protect, rebuild_above=args.rebuild_above,
-                                      gate_db=args.gate)
+                                      gate_db=args.gate, dehiss_db=args.dehiss)
                     result = render(y, folder / f"{n}_{label}{fmt}", args, ref)
                 log(f"  -> {result}")
                 log(f"     {note}")
@@ -373,7 +386,7 @@ def main(argv: list[str] | None = None) -> None:
             audio = load(src)
             y, note = process(audio, args.backend, mix=1 - args.blend, guard=guard, cache=cache,
                               rebuild_hf=rebuild_wanted(args), verbose=args.verbose, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip, protect_db=args.protect,
-                              rebuild_above=args.rebuild_above, gate_db=args.gate)
+                              rebuild_above=args.rebuild_above, gate_db=args.gate, dehiss_db=args.dehiss)
             result = render(y, dst, args, source_lufs(audio))
         mins, secs = divmod(time.time() - started, 60)
         log(f"  -> {result}  [{audio.size / SR / 60:.1f} min audio in {int(mins)}m{int(secs):02d}s]")

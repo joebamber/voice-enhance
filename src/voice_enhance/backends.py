@@ -86,6 +86,9 @@ def _df():
 # off the background on every test clip, with speech within 1 dB. Gains level
 # off above -18.
 DF_WORK_DB = -16.0
+# How far below the file's speech level a chunk may sit and still be
+# levelled up to DF_WORK_DB.
+DF_LEVEL_RANGE_DB = 12.0
 
 
 def speech_level_db(audio: np.ndarray) -> float:
@@ -107,15 +110,23 @@ def deepfilter(audio: np.ndarray, atten_lim_db: float | None = None) -> np.ndarr
     model, state = _df()  # load first so its import noise is silenced
     from df.enhance import enhance
 
+    # Level is set per chunk, not once for the file: on a long recording the
+    # speaker drifts (tires, leans back from the mic), and a chunk that reaches
+    # the model 6-10 dB under the working level gets far less noise taken off,
+    # so the background creeps back as the file goes on. The floor stops a
+    # chunk that's mostly pause or room tone being boosted until the model
+    # mistakes the noise for speech.
+    floor_db = speech_level_db(audio) - DF_LEVEL_RANGE_DB
+
     def run(seg: np.ndarray) -> np.ndarray:
+        gain = 10 ** ((DF_WORK_DB - max(speech_level_db(seg), floor_db)) / 20)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            y = enhance(model, state, torch.from_numpy(seg).unsqueeze(0), pad=True,
-                        atten_lim_db=atten_lim_db)
-        return y.squeeze(0).numpy()
+            y = enhance(model, state, torch.from_numpy((seg * gain).astype(np.float32)).unsqueeze(0),
+                        pad=True, atten_lim_db=atten_lim_db)
+        return y.squeeze(0).numpy() / gain
 
-    gain = 10 ** ((DF_WORK_DB - speech_level_db(audio)) / 20)
-    return (chunked(run, (audio * gain).astype(np.float32)) / gain).astype(np.float32)
+    return chunked(run, audio).astype(np.float32)
 
 
 # --- ClearerVoice-Studio: the rebuild ---------------------------------------

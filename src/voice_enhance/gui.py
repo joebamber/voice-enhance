@@ -37,7 +37,7 @@ DIALOGS = Path(__file__).with_name("dialogs.js")
 
 # settings key (argparse dest) -> flag; only values that differ from the CLI defaults are passed
 FLAGS = {"backend": "-b", "max_reduction": "--max-reduction", "protect": "--protect", "blend": "--blend",
-         "gate": "--gate", "laughter_guard": "--laughter-guard", "ai_dereverb": "--ai-dereverb", "lufs": "--lufs",
+         "gate": "--gate", "dehiss": "--dehiss", "laughter_guard": "--laughter-guard", "ai_dereverb": "--ai-dereverb", "lufs": "--lufs",
          "format": "-f", "stupase_crossover": "--stupase-crossover"}
 OFF_SWITCHES: dict[str, str] = {}  # flag given when False
 ON_SWITCHES = {"declip": "--declip", "rebuild": "--rebuild"}  # flag given when True
@@ -259,7 +259,7 @@ class Session:
                     cache = self.sample_cache[1]
                 y, note = cli.process(audio, args.backend, mix=1 - args.blend, guard=guard, cache=cache,
                                       rebuild_hf=rebuild_hf, ai_dereverb=args.ai_dereverb, repair_clipping=args.declip,
-                                      protect_db=args.protect, rebuild_above=args.rebuild_above, gate_db=args.gate)
+                                      protect_db=args.protect, rebuild_above=args.rebuild_above, gate_db=args.gate, dehiss_db=args.dehiss)
                 version = self.status["version"] + 1
                 dst = self.tmp / f"enhanced_{version}.wav"
                 result = cli.render(y, dst, args, self.ref_lufs)

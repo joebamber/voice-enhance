@@ -210,6 +210,9 @@
       <div class="ctl" data-key="gate" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Background gate</label><output></output>
         <input type="range" min="1" max="60" step="1">
         <small>Silences anything this far below the speaker, like faint voices in the background. Higher keeps quieter sounds.</small></div>
+      <div class="ctl" data-key="dehiss" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">De-hiss</label><output></output>
+        <input type="range" min="1" max="24" step="1">
+        <small>Turns down the steady treble hiss the AI lets through while someone's speaking, by up to this much. S's and T's are louder than the hiss and pass.</small></div>
       <div class="ctl" data-key="laughter_guard" data-show="deepfilter"><label class="name"><input type="checkbox" class="sw">Laughter guard<span class="ai" title="Runs a second, gentle DeepFilterNet pass for laughs.">✦ AI</span></label><output></output>
         <input type="range" min="0.05" max="1" step="0.05">
         <small>Protects laughs from the cleanup. Lower it if noise comes and goes around laughs.</small></div>
@@ -277,6 +280,7 @@ const SPECS = {
   blend: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 0.2 },
   protect: { fmt: v => `${v} dB`, off: 0, on: 22 },
   gate: { fmt: v => `${v} dB`, off: 0, on: 30 },
+  dehiss: { fmt: v => `${v} dB`, off: 0, on: 12 },
   laughter_guard: { fmt: v => v.toFixed(2), off: 0, on: 0.85 },
   ai_dereverb: { fmt: v => `${Math.round(v * 100)}%`, off: 0, on: 1 },
 };

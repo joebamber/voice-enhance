@@ -46,6 +46,7 @@ Opens the app in your browser. It runs on your Mac like the command line. Drop a
 | `--protect 22` | Turns on speech protection: speech this far above the room noise comes from the original, noise and all, so the AI can't duck loud syllables. Use it if loud words dip in level. Higher values let the AI process more. | 0 (off) |
 | `--max-reduction 12` | Caps how far DeepFilterNet pushes any sound down (in dB), leaving a little natural room tone instead of dead silence. | No cap |
 | `--gate 40` | Sets the background gate: anything this many dB below the main speaker is silenced, e.g. faint voices in the background, which the AI keeps because they're speech. Higher keeps quieter sounds; 0 turns it off. | 0 (off) |
+| `--dehiss 12` | Turns the recording's steady treble hiss down by up to this many dB. DeepFilterNet lets it through above ~5 kHz while someone's speaking, to keep the S's and T's. The hiss is measured between words in the original; only treble no louder than it is turned down, so sibilants pass (they lose a dB or few at the very top). Plain signal processing, no AI. 0 turns it off. | 0 (off) |
 | `voice-enhance ep.wav --compare` | Renders DeepFilterNet with and without the laughter guard into `ep_compare/`, all at the source level, for A/B listening. | |
 | `voice-enhance *.wav -o ~/Desktop/clean` | Batch-processes files into a folder. | Next to the input |
 | `-f m4a` / `mp3` / `flac` / `aiff` | Sets the output format. | 24-bit WAV |
@@ -68,6 +69,7 @@ By default DeepFilterNet removes as much noise as it can, and AI dereverb remove
 |---|---|---|
 | **Less** noise removal, natural room tone in the pauses | `--max-reduction 12` | Caps how far any sound is pushed down, in dB. Lower values leave more room tone. Also avoids watery or warbly artefacts on hard material. Leave the gate off, or it silences that room tone again. |
 | Silence faint voices in the background | `--gate 30` | The gate silences anything more than this many dB below the main speaker. Raise it to keep quieter sounds; 0 (the default) turns it off. |
+| Hiss you hear while someone's speaking | `--dehiss 12` | Turns down treble (above ~5 kHz) that's no louder than the recording's hiss, by up to 12 dB. Higher removes more but can dull the S's. |
 | **Less** noise removal, everywhere | `--blend 0.2` | Blends 20% of the original (noise included) back in. Higher values bring back more of the noise. |
 | Loud words dipping in level | `--protect 22` | Off by default, so the AI cleans all of the speech. If it ducks loud syllables, this takes speech more than 22 dB above the room noise from the original instead, noise and all (there the voice mostly masks it). Lower (e.g. `--protect 15`) keeps more of the original voice. |
 | Some room echo back | `--ai-dereverb 0.7` | On at 1 by default. Lower values leave a little room in; 0 turns it off. |
